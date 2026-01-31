@@ -25,19 +25,4 @@ def get_connection(database=None):
     )
 
 
-def get_trading_connection():
-    """
-    Get a connection to the trading database for data synchronization.
 
-    Returns:
-        pymysql.connections.Connection
-    """
-    settings = Settings()
-    return pymysql.connect(
-        host=settings.DB_HOST,
-        user=settings.DB_USER,
-        password=settings.DB_PASSWORD,
-        database=settings.TRADING_DB_NAME,
-        charset="utf8mb4",
-        autocommit=False,
-    )

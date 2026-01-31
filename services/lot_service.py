@@ -33,11 +33,15 @@ def construct_daily_lots(
 
     Args:
         conn: Database connection
-        start_date: Start date (YYYY-MM-DD). If None, processes all history.
+        start_date: Start date (YYYY-MM-DD). If None, defaults to 2025-12-11.
         end_date: End date (YYYY-MM-DD). If None, processes up to today.
     """
     where_clauses = []
     params: Dict[str, Any] = {}
+
+    # Default start date: 2025-12-13 (after initial position on 12/12)
+    if start_date is None:
+        start_date = "2025-12-13"
 
     if start_date:
         where_clauses.append("trade_date >= %(start_date)s")
@@ -60,23 +64,25 @@ def construct_daily_lots(
                 crd_class,
                 trade_date,
                 cntr_qty,
-                cntr_uv
+                cntr_uv,
+                loan_dt
             FROM account_trade_history
             {where_sql}
-            ORDER BY trade_date ASC, stk_cd, crd_class
+            ORDER BY trade_date ASC, stk_cd, crd_class, loan_dt
             """,
             params,
         )
 
         trades = cur.fetchall()
 
-    # Group trades by (stock_code, crd_class, trade_date)
-    grouped: Dict[Tuple[str, str, date], List[Dict]] = {}
+    # Group trades by (stock_code, crd_class, loan_dt, trade_date)
+    grouped: Dict[Tuple[str, str, str, date], List[Dict]] = {}
 
     for trade in trades:
         key = (
             trade["stk_cd"],
             trade["crd_class"] or "CASH",
+            trade["loan_dt"] or "",  # Empty string for CASH trades
             trade["trade_date"],
         )
         if key not in grouped:
@@ -84,7 +90,7 @@ def construct_daily_lots(
         grouped[key].append(trade)
 
     # Process each group
-    for (stock_code, crd_class, trade_date), group in grouped.items():
+    for (stock_code, crd_class, loan_dt, trade_date), group in grouped.items():
         buys = [t for t in group if _is_buy(t["io_tp_nm"])]
         sells = [t for t in group if _is_sell(t["io_tp_nm"])]
 
@@ -107,6 +113,7 @@ def construct_daily_lots(
                 stock_code,
                 stock_name,
                 crd_class,
+                loan_dt,
                 trade_date,
                 net_qty,
                 avg_price,
@@ -119,6 +126,7 @@ def construct_daily_lots(
                 conn,
                 stock_code,
                 crd_class,
+                loan_dt,
                 abs(net_qty),
                 trade_date,
             )
@@ -133,6 +141,7 @@ def _insert_daily_lot(
     stock_code: str,
     stock_name: str,
     crd_class: str,
+    loan_dt: str,
     trade_date: date,
     net_quantity: int,
     avg_purchase_price: Decimal,
@@ -143,11 +152,12 @@ def _insert_daily_lot(
         cur.execute(
             """
             INSERT INTO daily_lots (
-                stock_code, stock_name, crd_class, trade_date,
+                stock_code, stock_name, crd_class, loan_dt, trade_date,
                 net_quantity, avg_purchase_price, total_cost
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
+                stock_name = VALUES(stock_name),
                 net_quantity = VALUES(net_quantity),
                 avg_purchase_price = VALUES(avg_purchase_price),
                 total_cost = VALUES(total_cost),
@@ -157,6 +167,7 @@ def _insert_daily_lot(
                 stock_code,
                 stock_name,
                 crd_class,
+                loan_dt or None,
                 trade_date,
                 net_quantity,
                 float(avg_purchase_price),
@@ -169,6 +180,7 @@ def _reduce_lots_lifo(
     conn: pymysql.connections.Connection,
     stock_code: str,
     crd_class: str,
+    loan_dt: str,
     sell_qty: int,
     sell_date: date,
 ) -> None:
@@ -179,21 +191,27 @@ def _reduce_lots_lifo(
         conn: Database connection
         stock_code: Stock code
         crd_class: Credit class (CASH/CREDIT)
+        loan_dt: Loan date (for CREDIT) or empty string (for CASH)
         sell_qty: Quantity to reduce
         sell_date: Date of the sell transaction
     """
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         # Get open lots ordered by trade_date DESC (LIFO)
+        # IMPORTANT: Only close lots that:
+        # 1. Were bought BEFORE the sell date
+        # 2. Have the SAME loan_dt (for CREDIT trades)
         cur.execute(
             """
             SELECT lot_id, net_quantity
             FROM daily_lots
             WHERE stock_code = %s
               AND crd_class = %s
+              AND (loan_dt = %s OR (loan_dt IS NULL AND %s = ''))
               AND is_closed = FALSE
+              AND trade_date <= %s
             ORDER BY trade_date DESC
             """,
-            (stock_code, crd_class),
+            (stock_code, crd_class, loan_dt or None, loan_dt or '', sell_date),
         )
 
         lots = cur.fetchall()

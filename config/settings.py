@@ -22,9 +22,6 @@ class Settings(BaseSettings):
     DB_PASSWORD: str
     DB_NAME: str = "asset"  # Default to 'asset' database
 
-    # Trading database (for syncing)
-    TRADING_DB_NAME: str = "trading"
-
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

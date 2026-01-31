@@ -45,24 +45,27 @@ def create_portfolio_snapshot(
 
     total_portfolio_value = Decimal(str(summary["aset_evlt_amt"]))
 
-    # Aggregate lots by stock and crd_class
+    # Get positions from holdings (actual current positions)
+    # Aggregate by stock_code and crd_class (combining all loan_dt)
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         cur.execute(
             """
             SELECT
-                stock_code,
-                stock_name,
-                crd_class,
-                SUM(net_quantity) as total_quantity,
-                SUM(total_cost) / SUM(net_quantity) as avg_cost_basis,
-                MAX(current_price) as current_price,
-                SUM(total_cost) as total_cost,
-                SUM(unrealized_pnl) as unrealized_pnl
-            FROM daily_lots
-            WHERE is_closed = FALSE
-            GROUP BY stock_code, stock_name, crd_class
-            HAVING total_quantity > 0
-            """
+                h.stk_cd as stock_code,
+                MAX(h.stk_nm) as stock_name,
+                h.crd_class,
+                SUM(h.rmnd_qty) as total_quantity,
+                SUM(h.rmnd_qty * h.avg_prc) / SUM(h.rmnd_qty) as avg_cost_basis,
+                MAX(h.cur_prc) as current_price,
+                SUM(h.rmnd_qty * h.avg_prc) as total_cost,
+                SUM(h.rmnd_qty * (h.cur_prc - h.avg_prc)) as unrealized_pnl
+            FROM holdings h
+            WHERE h.snapshot_date = %s
+              AND h.rmnd_qty > 0
+            GROUP BY h.stk_cd, h.crd_class
+            ORDER BY h.stk_cd
+            """,
+            (snapshot_date,)
         )
 
         positions = cur.fetchall()
@@ -163,9 +166,11 @@ def get_portfolio_composition(
                 avg_cost_basis,
                 current_price,
                 market_value,
+                total_cost,
                 unrealized_pnl,
                 unrealized_return_pct,
-                portfolio_weight_pct
+                portfolio_weight_pct,
+                total_portfolio_value
             FROM portfolio_snapshot
             WHERE snapshot_date = %s
             ORDER BY portfolio_weight_pct DESC

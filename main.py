@@ -3,12 +3,14 @@ Asset Management Main Pipeline
 Daily batch processing for lot tracking and portfolio analytics.
 """
 
+import sys
 from datetime import date, timedelta
 
 from db.connection import get_connection
 from services.data_sync_service import sync_all
 from services.lot_service import construct_daily_lots, update_lot_metrics
 from services.portfolio_service import create_portfolio_snapshot
+from utils.krx_calendar import is_korea_trading_day_by_samsung
 
 
 def main():
@@ -16,29 +18,58 @@ def main():
     Main execution function for daily batch processing.
 
     Steps:
-    1. Sync data from trading database
-    2. Construct/update daily lots
-    3. Update lot metrics (prices, returns, holding days)
-    4. Create portfolio snapshot
+    1. Check if today is a trading day
+    2. (Optional) Sync data from Kiwoom API to asset database (only with --init flag)
+    3. Construct/update daily lots
+    4. Update lot metrics (prices, returns, holding days)
+    5. Create portfolio snapshot
     """
     print("=" * 60)
     print("Asset Management Pipeline - Daily Batch")
     print("=" * 60)
 
-    today = date.today()
-    yesterday = today - timedelta(days=1)
+    # Check for --force flag
+    force_run = "--force" in sys.argv
+    init_sync = "--init" in sys.argv
 
-    # Step 1: Sync data from trading database
-    print(f"\n[1/4] Syncing data from trading database...")
+    if init_sync:
+        print("\n[INFO] Initial Kiwoom API synchronization enabled (--init flag)")
+
+    # Step 0: Check if today is a trading day
+    print("\n[0/4] Checking trading day status...")
     try:
-        # For incremental sync: sync_all(start_date=yesterday.strftime('%Y-%m-%d'), snapshot_date=today)
-        # For full sync: sync_all(start_date=None, snapshot_date=today)
-        sync_all(start_date=None, snapshot_date=today)
-        print("OK: Data sync completed")
+        is_trading_day = is_korea_trading_day_by_samsung()
+        if is_trading_day:
+            print("✓ Today is a trading day")
+        else:
+            print("⚠ Today is NOT a trading day (weekend or holiday)")
+            if not force_run:
+                print("\nℹ To run anyway, use: python main.py --force")
+                user_input = input("Continue anyway? [y/N]: ").strip().lower()
+                if user_input not in ['y', 'yes']:
+                    print("\n✗ Execution cancelled")
+                    return
+                print("→ Continuing with manual execution...")
+            else:
+                print("→ Force flag detected, continuing...")
     except Exception as e:
-        print(f"Warning: Data sync failed: {e}")
-        print("Continuing with existing data...")
-        # Don't return - continue with existing data in case of sync issues
+        print(f"Warning: Could not check trading day status: {e}")
+        print("→ Continuing anyway...")
+
+    today = date.today()
+
+    # Step 1: (Optional) Sync data from Kiwoom API
+    if init_sync:
+        print(f"\n[1/4] Syncing data from Kiwoom API (--init)...")
+        try:
+            sync_all(snapshot_date=today)
+            print("✓ Data sync from Kiwoom API completed")
+        except Exception as e:
+            print(f"✗ Data sync failed: {e}")
+            print("Continuing with existing data...")
+            # Don't return - continue with existing data in case of sync issues
+    else:
+        print(f"\n[1/4] Skipping Kiwoom API sync (use --init flag for initial sync)")
 
     # Step 2: Construct daily lots
     print(f"\n[2/4] Constructing daily lots...")

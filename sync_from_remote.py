@@ -1,6 +1,14 @@
 """
-Sync data from remote trading database to local asset database.
-Run this after establishing SSH tunnel: ssh -L 3307:localhost:3306 user@server
+DEPRECATED: Sync from remote trading database.
+This file is no longer used. All data is now managed directly in the local asset database.
+
+To use this system:
+1. Manually populate holdings, trade history, and account data in the local asset database
+2. See db/schema.sql for table definitions
+
+Legacy notes:
+- Previously synced data from a remote trading database via SSH tunnel
+- Now all data management is done directly in the asset database
 """
 
 from datetime import date
