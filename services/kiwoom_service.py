@@ -376,6 +376,116 @@ class KiwoomAPIClient:
             print(f"✗ Failed to fetch daily cash flow for {target_date}: {e}")
             raise
 
+    def get_market_index(self, market_type: str = "0", index_code: str = "001") -> Dict[str, Any]:
+        """
+        Fetch market index data (KOSPI/KOSDAQ) from Kiwoom API.
+        Uses ka20009 API (업종현재가일별요청).
+
+        Args:
+            market_type: Market type ("0": KOSPI, "1": KOSDAQ, "2": KOSPI200)
+            index_code: Index code ("001": KOSPI종합, "101": KOSDAQ종합)
+
+        Returns:
+            Dict containing current index value and daily history
+        """
+        token = self.get_access_token()
+
+        # API endpoint for market index (ka20009) - 업종
+        url = f"{self.base_url}/api/dostk/sect"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'ka20009',
+        }
+
+        body = {
+            "mrkt_tp": market_type,  # 시장구분 (0:코스피, 1:코스닥, 2:코스피200)
+            "inds_cd": index_code,   # 업종코드 (001:종합(KOSPI), 101:종합(KOSDAQ))
+        }
+
+        all_daily_data = []
+        cont_yn = "N"
+        next_key = ""
+        result = None
+        max_pages = 50  # 무한루프 방지
+        cutoff_date = date(2025, 12, 10)  # 이 날짜 이전 데이터가 나오면 종료
+
+        try:
+            for _ in range(max_pages):
+                # 연속 조회 헤더 설정
+                if cont_yn == "Y":
+                    headers["cont-yn"] = "Y"
+                    headers["next-key"] = next_key
+
+                response = requests.post(url, headers=headers, json=body, timeout=30)
+                response.raise_for_status()
+                result_page = response.json()
+
+                # Check for API error
+                if result_page.get("return_code") != 0:
+                    print(f"  API error: {result_page.get('return_msg', 'Unknown error')}")
+                    break
+
+                # First page: save base data
+                if not result:
+                    result = result_page
+
+                # Accumulate daily data from inds_cur_prc_daly_rept
+                daily_data = result_page.get("inds_cur_prc_daly_rept", [])
+
+                # Check if we've reached data before cutoff date
+                reached_cutoff = False
+                for item in daily_data:
+                    dt_str = item.get("dt_n")
+                    if dt_str:
+                        item_date = self._parse_date(dt_str)
+                        if item_date < cutoff_date:
+                            reached_cutoff = True
+                            break
+                        all_daily_data.append(item)
+
+                if reached_cutoff:
+                    break
+
+                # Check for continuation
+                cont_yn = response.headers.get("cont-yn", "N")
+                next_key = response.headers.get("next-key", "")
+
+                if cont_yn != "Y" or not next_key:
+                    break
+
+            # Update result with all accumulated daily data
+            if result:
+                result["inds_cur_prc_daly_rept"] = all_daily_data
+
+            return result
+
+        except Exception as e:
+            print(f"✗ Failed to fetch market index: {e}")
+            raise
+
+    @staticmethod
+    def _parse_price(price_str: str) -> float:
+        """Parse price string with sign prefix to float (absolute value)."""
+        if not price_str:
+            return 0.0
+        try:
+            # Remove sign prefix (+/-) and convert to float
+            return abs(float(price_str.replace('+', '').replace('-', '')))
+        except (ValueError, TypeError):
+            return 0.0
+
+    @staticmethod
+    def _parse_signed_value(value_str: str) -> float:
+        """Parse signed value string to float (preserving sign)."""
+        if not value_str:
+            return 0.0
+        try:
+            return float(value_str)
+        except (ValueError, TypeError):
+            return 0.0
+
     @staticmethod
     def _parse_date(date_str: str) -> date:
         """Parse date string in YYYYMMDD format to date object."""
@@ -958,3 +1068,154 @@ def backfill_daily_snapshots(
     print("=" * 80)
     print(f"Backfill complete: {synced_count} synced")
     return synced_count
+
+
+def sync_market_index_from_kiwoom(
+    conn: pymysql.connections.Connection,
+    start_date: date = None,
+    end_date: date = None,
+) -> int:
+    """
+    Fetch KOSPI and KOSDAQ index data from Kiwoom API and save to database.
+    Uses ka20009 API which returns daily history.
+
+    Args:
+        conn: Database connection
+        start_date: Start date to filter (inclusive). If None, saves all returned data.
+        end_date: End date to filter (inclusive). If None, uses today.
+
+    Returns:
+        Number of records synced
+    """
+    if end_date is None:
+        end_date = date.today()
+
+    print(f"Fetching market index data from Kiwoom API...")
+
+    try:
+        client = KiwoomAPIClient()
+
+        # Fetch KOSPI data (mrkt_tp="0", inds_cd="001")
+        print("  Fetching KOSPI index...")
+        kospi_data = client.get_market_index(market_type="0", index_code="001")
+
+        # Fetch KOSDAQ data (mrkt_tp="1", inds_cd="101")
+        print("  Fetching KOSDAQ index...")
+        kosdaq_data = client.get_market_index(market_type="1", index_code="101")
+
+        if not kospi_data and not kosdaq_data:
+            print("No market index data found from Kiwoom API")
+            return 0
+
+        # Parse KOSPI daily data into dict by date
+        kospi_by_date = {}
+        if kospi_data:
+            for item in kospi_data.get("inds_cur_prc_daly_rept", []):
+                dt_str = item.get("dt_n")
+                if dt_str:
+                    idx_date = client._parse_date(dt_str)
+                    kospi_by_date[idx_date] = {
+                        "close": client._parse_price(item.get("cur_prc_n")),
+                        "change": client._parse_signed_value(item.get("pred_pre_n")),
+                        "change_pct": client._parse_signed_value(item.get("flu_rt_n")),
+                    }
+
+        # Parse KOSDAQ daily data into dict by date
+        kosdaq_by_date = {}
+        if kosdaq_data:
+            for item in kosdaq_data.get("inds_cur_prc_daly_rept", []):
+                dt_str = item.get("dt_n")
+                if dt_str:
+                    idx_date = client._parse_date(dt_str)
+                    kosdaq_by_date[idx_date] = {
+                        "close": client._parse_price(item.get("cur_prc_n")),
+                        "change": client._parse_signed_value(item.get("pred_pre_n")),
+                        "change_pct": client._parse_signed_value(item.get("flu_rt_n")),
+                    }
+
+        # Merge all dates
+        all_dates = set(kospi_by_date.keys()) | set(kosdaq_by_date.keys())
+
+        # Filter by date range
+        if start_date:
+            all_dates = {d for d in all_dates if d >= start_date}
+        all_dates = {d for d in all_dates if d <= end_date}
+
+        if not all_dates:
+            print("No market index data within date range")
+            return 0
+
+        # Upsert records
+        upsert_sql = """
+            INSERT INTO market_index (
+                index_date,
+                kospi_close, kospi_change, kospi_change_pct,
+                kosdaq_close, kosdaq_change, kosdaq_change_pct
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                kospi_close = VALUES(kospi_close),
+                kospi_change = VALUES(kospi_change),
+                kospi_change_pct = VALUES(kospi_change_pct),
+                kosdaq_close = VALUES(kosdaq_close),
+                kosdaq_change = VALUES(kosdaq_change),
+                kosdaq_change_pct = VALUES(kosdaq_change_pct),
+                updated_at = CURRENT_TIMESTAMP
+        """
+
+        synced_count = 0
+        with conn.cursor() as cur:
+            for idx_date in sorted(all_dates):
+                kospi = kospi_by_date.get(idx_date, {})
+                kosdaq = kosdaq_by_date.get(idx_date, {})
+
+                cur.execute(
+                    upsert_sql,
+                    (
+                        idx_date,
+                        kospi.get("close"),
+                        kospi.get("change"),
+                        kospi.get("change_pct"),
+                        kosdaq.get("close"),
+                        kosdaq.get("change"),
+                        kosdaq.get("change_pct"),
+                    ),
+                )
+                synced_count += 1
+
+        conn.commit()
+        print(f"[OK] Synced {synced_count} market index records")
+        return synced_count
+
+    except Exception as e:
+        print(f"[ERROR] Failed to sync market index: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+def backfill_market_index(
+    conn: pymysql.connections.Connection,
+    start_date: date = None,
+    end_date: date = None,
+) -> int:
+    """
+    Backfill market index data for a date range.
+    This is a wrapper around sync_market_index_from_kiwoom with date filtering.
+
+    Args:
+        conn: Database connection
+        start_date: Start date (inclusive)
+        end_date: End date (inclusive, defaults to today)
+
+    Returns:
+        Number of records synced
+    """
+    print(f"Backfilling market index from {start_date} to {end_date or date.today()}")
+    print("=" * 80)
+
+    result = sync_market_index_from_kiwoom(conn, start_date, end_date)
+
+    print("=" * 80)
+    print(f"Backfill complete: {result} records")
+    return result

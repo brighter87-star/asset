@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 
 import pymysql
 
-
 def create_portfolio_snapshot(
     conn: pymysql.connections.Connection,
     snapshot_date: Optional[date] = None,
