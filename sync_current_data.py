@@ -4,7 +4,11 @@ Shows detailed account information including balance, P&L, and holdings.
 """
 
 from db.connection import get_connection
-from services.kiwoom_service import sync_holdings_from_kiwoom, sync_account_summary_from_kiwoom
+from services.kiwoom_service import (
+    sync_holdings_from_kiwoom,
+    sync_account_summary_from_kiwoom,
+    sync_daily_snapshot_from_kiwoom,
+)
 
 
 def main():
@@ -16,14 +20,19 @@ def main():
 
     try:
         # Step 1: Sync account summary
-        print("\n[1/2] Syncing account summary from Kiwoom API...")
+        print("\n[1/3] Syncing account summary from Kiwoom API...")
         sync_account_summary_from_kiwoom(conn)
         print("OK Synced account summary")
 
         # Step 2: Sync holdings (includes current prices)
-        print("\n[2/2] Syncing current holdings from Kiwoom API...")
+        print("\n[2/3] Syncing current holdings from Kiwoom API...")
         holdings_count = sync_holdings_from_kiwoom(conn)
         print(f"OK Synced {holdings_count} holdings")
+
+        # Step 3: Sync daily portfolio snapshot (includes cash flows)
+        print("\n[3/3] Syncing daily portfolio snapshot...")
+        sync_daily_snapshot_from_kiwoom(conn)
+        print("OK Synced daily snapshot")
 
         # Display detailed summary
         print("\n" + "=" * 80)
@@ -36,6 +45,7 @@ def main():
                     snapshot_date,
                     acnt_nm,
                     entr,
+                    d2_entra,
                     tot_est_amt,
                     aset_evlt_amt,
                     tot_pur_amt,
@@ -53,13 +63,14 @@ def main():
                 snapshot_date = row[0]
                 acnt_nm = row[1] or ""
                 entr = row[2] or 0
-                tot_est_amt = row[3] or 0
-                aset_evlt_amt = row[4] or 0
-                tot_pur_amt = row[5] or 0
-                tot_grnt_sella = row[6] or 0
-                invt_bsamt = row[7] or 0
-                lspft_amt = row[8] or 0
-                lspft_rt = row[9] or 0
+                d2_entra = row[3] or 0
+                tot_est_amt = row[4] or 0
+                aset_evlt_amt = row[5] or 0
+                tot_pur_amt = row[6] or 0
+                tot_grnt_sella = row[7] or 0
+                invt_bsamt = row[8] or 0
+                lspft_amt = row[9] or 0
+                lspft_rt = row[10] or 0
 
                 print(f"\n[Account Info]")
                 print(f"Date: {snapshot_date}")
@@ -67,7 +78,8 @@ def main():
                     print(f"Account: {acnt_nm}")
 
                 print(f"\n[Balance]")
-                print(f"Deposit: {entr:>15,} won")
+                print(f"Deposit (D+2): {d2_entra:>15,} won")
+                print(f"Deposit (D+0): {entr:>15,} won")
                 print(f"Total Est.: {tot_est_amt:>15,} won")
 
                 print(f"\n[Holdings]")

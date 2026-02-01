@@ -130,10 +130,10 @@ class KiwoomAPIClient:
 
     def get_holdings(self) -> Dict[str, Any]:
         """
-        Fetch current holdings from Kiwoom API.
+        Fetch current holdings from Kiwoom API with continuous query support.
 
         Returns:
-            Full holdings data from API response
+            Full holdings data from API response (merged from all pages)
         """
         token = self.get_access_token()
 
@@ -152,11 +152,38 @@ class KiwoomAPIClient:
         }
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
-            response.raise_for_status()
-            result = response.json()
+            all_holdings = []
+            cont_yn = "N"
+            next_key = ""
+            result = None
 
-            # Return full response for detailed processing
+            while True:
+                # 연속 조회 헤더 설정
+                if cont_yn == "Y":
+                    headers["cont-yn"] = "Y"
+                    headers["next-key"] = next_key
+
+                response = requests.post(url, headers=headers, json=body, timeout=10)
+                response.raise_for_status()
+                result_page = response.json()
+
+                # First page: save account summary data
+                if not result:
+                    result = result_page
+
+                # Accumulate holdings from stk_acnt_evlt_prst
+                holdings = result_page.get("stk_acnt_evlt_prst", [])
+                all_holdings.extend(holdings)
+
+                # Check for continuation
+                cont_yn = response.headers.get("cont-yn", "N")
+                next_key = response.headers.get("next-key", "")
+
+                if cont_yn != "Y":
+                    break
+
+            # Update result with all accumulated holdings
+            result["stk_acnt_evlt_prst"] = all_holdings
             return result
 
         except Exception as e:
@@ -165,7 +192,7 @@ class KiwoomAPIClient:
 
     def get_account_summary(self) -> Dict[str, Any]:
         """
-        Fetch account summary from Kiwoom API.
+        Fetch account summary from Kiwoom API with continuous query support.
 
         Returns:
             Full account summary data including all fields
@@ -187,15 +214,166 @@ class KiwoomAPIClient:
         }
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
-            response.raise_for_status()
-            result = response.json()
+            all_holdings = []
+            cont_yn = "N"
+            next_key = ""
+            result = None
 
-            # Return full response for detailed processing
+            while True:
+                # 연속 조회 헤더 설정
+                if cont_yn == "Y":
+                    headers["cont-yn"] = "Y"
+                    headers["next-key"] = next_key
+
+                response = requests.post(url, headers=headers, json=body, timeout=10)
+                response.raise_for_status()
+                result_page = response.json()
+
+                # First page: save account summary data
+                if not result:
+                    result = result_page
+
+                # Accumulate holdings from stk_acnt_evlt_prst
+                holdings = result_page.get("stk_acnt_evlt_prst", [])
+                all_holdings.extend(holdings)
+
+                # Check for continuation
+                cont_yn = response.headers.get("cont-yn", "N")
+                next_key = response.headers.get("next-key", "")
+
+                if cont_yn != "Y":
+                    break
+
+            # Update result with all accumulated holdings
+            result["stk_acnt_evlt_prst"] = all_holdings
             return result
 
         except Exception as e:
             print(f"✗ Failed to fetch account summary: {e}")
+            raise
+
+    def get_daily_account_status(self) -> Dict[str, Any]:
+        """
+        Fetch daily account status including cash flows from Kiwoom API.
+        Uses kt00017 API to get deposit/withdrawal info.
+
+        Returns:
+            Full daily account status including ina_amt (deposit) and outa (withdrawal)
+        """
+        token = self.get_access_token()
+
+        # API endpoint for daily account status (kt00017)
+        url = f"{self.base_url}/api/dostk/acnt"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'kt00017',
+        }
+
+        body = {
+            "qry_tp": "1",  # 조회구분
+            "dmst_stex_tp": "KRX",  # 국내외구분
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            return result
+
+        except Exception as e:
+            print(f"✗ Failed to fetch daily account status: {e}")
+            raise
+
+    def get_daily_balance(self, target_date: date = None) -> Dict[str, Any]:
+        """
+        Fetch daily balance and return data for a specific date.
+        Uses ka01690 API which supports historical queries via dt parameter.
+
+        Args:
+            target_date: Date to query (defaults to today)
+
+        Returns:
+            Full daily balance data including day_stk_asst (추정자산) and day_bal_rt array
+        """
+        token = self.get_access_token()
+
+        # API endpoint for daily balance (ka01690)
+        url = f"{self.base_url}/api/dostk/acnt"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'ka01690',
+        }
+
+        if target_date is None:
+            target_date = date.today()
+
+        # Format date as YYYYMMDD
+        dt_str = target_date.strftime("%Y%m%d")
+
+        body = {
+            "qry_dt": dt_str,  # 조회일자 (YYYYMMDD)
+            "dmst_stex_tp": "KRX",  # 국내외구분
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            return result
+
+        except Exception as e:
+            print(f"✗ Failed to fetch daily balance for {target_date}: {e}")
+            raise
+
+    def get_daily_cash_flow(self, target_date: date = None) -> Dict[str, Any]:
+        """
+        Fetch daily cash flow (deposits/withdrawals) for a specific date.
+        Uses kt00016 API (일별계좌수익률상세현황요청).
+
+        Args:
+            target_date: Date to query (defaults to today)
+
+        Returns:
+            Cash flow data including termin_tot_trns (입금) and termin_tot_pymn (출금)
+        """
+        token = self.get_access_token()
+
+        # API endpoint for daily cash flow (kt00016)
+        url = f"{self.base_url}/api/dostk/acnt"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'kt00016',
+        }
+
+        if target_date is None:
+            target_date = date.today()
+
+        # Format date as YYYYMMDD
+        dt_str = target_date.strftime("%Y%m%d")
+
+        # Query single day by setting both fr_dt and to_dt to the same date
+        body = {
+            "fr_dt": dt_str,  # 평가시작일
+            "to_dt": dt_str,  # 평가종료일
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            return result
+
+        except Exception as e:
+            print(f"✗ Failed to fetch daily cash flow for {target_date}: {e}")
             raise
 
     @staticmethod
@@ -535,3 +713,248 @@ def sync_account_summary_from_kiwoom(
         import traceback
         traceback.print_exc()
         raise
+
+
+def is_trading_day(check_date: date) -> bool:
+    """
+    Check if a date is a Korean trading day using Samsung Electronics data.
+
+    Args:
+        check_date: Date to check
+
+    Returns:
+        True if trading day, False otherwise
+    """
+    from utils.krx_calendar import is_korea_trading_day_by_samsung
+
+    return is_korea_trading_day_by_samsung(check_date)
+
+
+def sync_daily_snapshot_from_kiwoom(
+    conn: pymysql.connections.Connection,
+    target_date: date = None,
+    accumulated_deposit: int = 0,
+    accumulated_withdrawal: int = 0,
+) -> int:
+    """
+    Fetch daily balance data to create portfolio snapshot.
+    Uses ka01690 API which supports historical queries via dt parameter.
+    Only saves data if target_date is a trading day.
+
+    Args:
+        conn: Database connection
+        target_date: Date to sync (defaults to today)
+        accumulated_deposit: Accumulated deposits from previous non-trading days
+        accumulated_withdrawal: Accumulated withdrawals from previous non-trading days
+
+    Returns:
+        Number of records synced (0 or 1)
+    """
+    if target_date is None:
+        target_date = date.today()
+
+    # Check if trading day
+    if not is_trading_day(target_date):
+        print(f"Skipping {target_date} - not a trading day (weekend)")
+        return 0
+
+    print(f"Creating daily portfolio snapshot for {target_date}...")
+
+    try:
+        client = KiwoomAPIClient()
+
+        # Get daily balance data (ka01690) with historical support
+        balance_data = client.get_daily_balance(target_date)
+
+        # Get daily cash flow data (kt00016)
+        cash_flow_data = client.get_daily_cash_flow(target_date)
+
+        if not balance_data:
+            print("No balance data found from Kiwoom API")
+            return 0
+
+        snapshot_date = target_date
+
+        # Helper function to safely convert to int
+        def to_int(val):
+            if val is None or val == '':
+                return None
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return None
+
+        # Delete existing record for this date
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM daily_portfolio_snapshot WHERE snapshot_date = %s", (snapshot_date,))
+
+        # Insert daily snapshot combining ka01690 + kt00016 data
+        insert_sql = """
+            INSERT INTO daily_portfolio_snapshot (
+                snapshot_date,
+                day_stk_asst,
+                tot_pur_amt, tot_evlt_amt,
+                ina_amt, outa,
+                buy_amt, sell_amt, cmsn, tax,
+                unrealized_pl, lspft_amt
+            )
+            VALUES (
+                %s,
+                %s,
+                %s, %s,
+                %s, %s,
+                %s, %s, %s, %s,
+                %s, %s
+            )
+        """
+
+        # Get day_stk_asst (추정자산) directly from ka01690 API
+        day_stk_asst = to_int(balance_data.get("day_stk_asst")) or 0
+
+        # Parse day_bal_rt array from ka01690 to calculate stock totals
+        day_bal_rt = balance_data.get("day_bal_rt", [])
+
+        tot_evlt_amt = 0  # 총평가금액
+        tot_pur_amt = 0   # 총매입금액
+
+        for stock in day_bal_rt:
+            evlt_amt = to_int(stock.get("evlt_amt")) or 0
+            rmnd_qty = to_int(stock.get("rmnd_qty")) or 0
+            buy_uv = to_int(stock.get("buy_uv")) or 0
+
+            tot_evlt_amt += evlt_amt
+            tot_pur_amt += (buy_uv * rmnd_qty)
+
+        # Extract cash flow data from kt00016 and add accumulated values
+        daily_deposit = to_int(cash_flow_data.get("termin_tot_trns")) or 0
+        daily_withdrawal = to_int(cash_flow_data.get("termin_tot_pymn")) or 0
+
+        ina_amt = daily_deposit + accumulated_deposit  # 기간내총입금 + 비거래일 누적
+        outa = daily_withdrawal + accumulated_withdrawal  # 기간내총출금 + 비거래일 누적
+
+        # These fields are not available from either API
+        buy_amt = 0  # 매수금액
+        sell_amt = 0 # 매도금액
+        cmsn = 0     # 수수료
+        tax = 0      # 세금
+        lspft_amt = 0  # 실현손익
+
+        # Calculate unrealized P/L
+        unrealized_pl = tot_evlt_amt - tot_pur_amt
+
+        with conn.cursor() as cur:
+            cur.execute(
+                insert_sql,
+                (
+                    snapshot_date,
+                    day_stk_asst,
+                    tot_pur_amt, tot_evlt_amt,
+                    ina_amt, outa,
+                    buy_amt, sell_amt, cmsn, tax,
+                    unrealized_pl, lspft_amt,
+                ),
+            )
+
+        conn.commit()
+        print(f"✓ Synced daily portfolio snapshot for {target_date}")
+        print(f"  Estimated Asset: {day_stk_asst or 0:,} won")
+        print(f"  Deposit: {ina_amt or 0:,} won, Withdrawal: {outa or 0:,} won")
+        return 1
+
+    except Exception as e:
+        print(f"✗ Failed to sync daily snapshot for {target_date}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+def backfill_daily_snapshots(
+    conn: pymysql.connections.Connection,
+    start_date: date,
+    end_date: date = None,
+) -> int:
+    """
+    Backfill daily snapshots for all trading days in a date range.
+
+    Args:
+        conn: Database connection
+        start_date: Start date (inclusive)
+        end_date: End date (inclusive, defaults to today)
+
+    Returns:
+        Number of records synced
+    """
+    if end_date is None:
+        end_date = date.today()
+
+    print(f"Backfilling daily snapshots from {start_date} to {end_date}")
+    print("=" * 80)
+
+    from datetime import timedelta
+
+    current_date = start_date
+    synced_count = 0
+
+    # Accumulate deposits/withdrawals from non-trading days
+    accumulated_deposits = 0
+    accumulated_withdrawals = 0
+
+    while current_date <= end_date:
+        if is_trading_day(current_date):
+            try:
+                # For trading days: sync full snapshot with accumulated cash flows
+                client = KiwoomAPIClient()
+
+                if accumulated_deposits > 0 or accumulated_withdrawals > 0:
+                    print(f"[{current_date}] Trading day - Including accumulated: Deposit +{accumulated_deposits:,}, Withdrawal +{accumulated_withdrawals:,}")
+                else:
+                    print(f"[{current_date}] Trading day")
+
+                # Sync the full snapshot with accumulated cash flows
+                result = sync_daily_snapshot_from_kiwoom(
+                    conn,
+                    current_date,
+                    accumulated_deposit=accumulated_deposits,
+                    accumulated_withdrawal=accumulated_withdrawals
+                )
+                if result > 0:
+                    synced_count += 1
+
+                # Reset accumulators after successful sync
+                accumulated_deposits = 0
+                accumulated_withdrawals = 0
+
+            except Exception as e:
+                print(f"[{current_date}] Failed: {e}")
+        else:
+            # For non-trading days: check for deposits/withdrawals and accumulate
+            try:
+                client = KiwoomAPIClient()
+                cash_flow = client.get_daily_cash_flow(current_date)
+
+                def to_int(val):
+                    if val is None or val == '':
+                        return 0
+                    try:
+                        return int(val)
+                    except (ValueError, TypeError):
+                        return 0
+
+                deposit = to_int(cash_flow.get("termin_tot_trns"))
+                withdrawal = to_int(cash_flow.get("termin_tot_pymn"))
+
+                if deposit > 0 or withdrawal > 0:
+                    accumulated_deposits += deposit
+                    accumulated_withdrawals += withdrawal
+                    print(f"[{current_date}] Non-trading day - Accumulated Deposit: +{deposit:,}, Withdrawal: +{withdrawal:,}")
+                else:
+                    print(f"[{current_date}] Non-trading day - No cash flow")
+
+            except Exception as e:
+                print(f"[{current_date}] Non-trading day - Failed to check cash flow: {e}")
+
+        current_date += timedelta(days=1)
+
+    print("=" * 80)
+    print(f"Backfill complete: {synced_count} synced")
+    return synced_count
