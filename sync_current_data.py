@@ -87,7 +87,7 @@ def main():
 
         # Display holdings with current prices
         print("\n" + "=" * 80)
-        print("Current Holdings (Top 15)")
+        print("Current Holdings (All)")
         print("=" * 80)
 
         with conn.cursor() as cur:
@@ -106,7 +106,6 @@ def main():
                 WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM holdings)
                   AND rmnd_qty > 0
                 ORDER BY evlt_amt DESC
-                LIMIT 15
             """)
 
             rows = cur.fetchall()
