@@ -2,11 +2,13 @@
 Portfolio service for portfolio-level analytics and snapshots.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 import pymysql
+
+from utils.krx_calendar import is_korea_trading_day_by_samsung
 
 def create_portfolio_snapshot(
     conn: pymysql.connections.Connection,
@@ -231,3 +233,209 @@ def get_position_summary(
         result["total_return_pct"] = float(return_pct)
 
         return result
+
+
+def backfill_portfolio_snapshots(
+    conn: pymysql.connections.Connection,
+    start_date: date,
+    end_date: Optional[date] = None,
+) -> int:
+    """
+    Backfill portfolio_snapshot table from daily_lots for historical dates.
+
+    This reconstructs portfolio composition by finding which lots were open
+    on each historical date.
+
+    Args:
+        conn: Database connection
+        start_date: Start date for backfill
+        end_date: End date for backfill (default: today)
+
+    Returns:
+        Total number of snapshot records created
+    """
+    if end_date is None:
+        end_date = date.today()
+
+    print(f"Backfilling portfolio snapshots from {start_date} to {end_date}")
+    print("=" * 60)
+
+    total_count = 0
+    current_date = start_date
+
+    while current_date <= end_date:
+        if is_korea_trading_day_by_samsung(current_date):
+            count = _create_portfolio_snapshot_from_lots(conn, current_date)
+            if count > 0:
+                print(f"[{current_date}] Created {count} position(s)")
+                total_count += count
+            else:
+                print(f"[{current_date}] No positions")
+
+        current_date += timedelta(days=1)
+
+    print("=" * 60)
+    print(f"Backfill complete: {total_count} total records")
+    return total_count
+
+
+def _create_portfolio_snapshot_from_lots(
+    conn: pymysql.connections.Connection,
+    snapshot_date: date,
+) -> int:
+    """
+    Create portfolio snapshot from daily_lots for a specific historical date.
+
+    A lot was open on date X if:
+    - trade_date <= X (lot was created before or on that date)
+    - AND (is_closed = FALSE OR closed_date > X) (lot wasn't closed yet at that time)
+    """
+    # Get total portfolio value from daily_portfolio_snapshot
+    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT day_stk_asst
+            FROM daily_portfolio_snapshot
+            WHERE snapshot_date = %s
+            """,
+            (snapshot_date,),
+        )
+        snapshot = cur.fetchone()
+
+    if not snapshot or not snapshot["day_stk_asst"]:
+        return 0
+
+    total_portfolio_value = Decimal(str(snapshot["day_stk_asst"]))
+
+    # Get lots that were open on this date
+    # A lot was open if: trade_date <= snapshot_date AND (is_closed=FALSE OR closed_date > snapshot_date)
+    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                stock_code,
+                MAX(stock_name) as stock_name,
+                crd_class,
+                SUM(net_quantity) as total_quantity,
+                SUM(total_cost) / SUM(net_quantity) as avg_cost_basis,
+                SUM(total_cost) as total_cost
+            FROM daily_lots
+            WHERE trade_date <= %s
+              AND (is_closed = FALSE OR closed_date > %s)
+              AND net_quantity > 0
+            GROUP BY stock_code, crd_class
+            HAVING total_quantity > 0
+            ORDER BY stock_code
+            """,
+            (snapshot_date, snapshot_date),
+        )
+        positions = cur.fetchall()
+
+    if not positions:
+        return 0
+
+    # Get last trade prices for each stock on or before snapshot_date
+    prices = _get_historical_prices(conn, snapshot_date)
+
+    # Delete existing snapshot for this date
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM portfolio_snapshot WHERE snapshot_date = %s",
+            (snapshot_date,),
+        )
+
+    # Insert snapshot records
+    insert_sql = """
+        INSERT INTO portfolio_snapshot (
+            snapshot_date, stock_code, stock_name, crd_class,
+            total_quantity, avg_cost_basis, current_price,
+            market_value, total_cost,
+            unrealized_pnl, unrealized_return_pct, portfolio_weight_pct,
+            total_portfolio_value
+        )
+        VALUES (
+            %s, %s, %s, %s,
+            %s, %s, %s,
+            %s, %s,
+            %s, %s, %s,
+            %s
+        )
+    """
+
+    count = 0
+
+    with conn.cursor() as cur:
+        for pos in positions:
+            stock_code = pos["stock_code"]
+            crd_class = pos["crd_class"]
+            total_qty = int(pos["total_quantity"])
+            avg_cost = Decimal(str(pos["avg_cost_basis"])) if pos["avg_cost_basis"] else Decimal(0)
+            total_cost = Decimal(str(pos["total_cost"])) if pos["total_cost"] else Decimal(0)
+
+            # Get price (from trade history or use avg_cost as fallback)
+            current_price = prices.get((stock_code, crd_class), float(avg_cost))
+            current_price_dec = Decimal(str(current_price))
+
+            # Calculate metrics
+            market_value = current_price_dec * Decimal(total_qty)
+            unrealized_pnl = market_value - total_cost
+            unrealized_return_pct = (
+                (unrealized_pnl / total_cost * 100) if total_cost > 0 else Decimal(0)
+            )
+            portfolio_weight_pct = (
+                (market_value / total_portfolio_value * 100) if total_portfolio_value > 0 else Decimal(0)
+            )
+
+            cur.execute(
+                insert_sql,
+                (
+                    snapshot_date,
+                    stock_code,
+                    pos["stock_name"],
+                    crd_class,
+                    total_qty,
+                    float(avg_cost),
+                    float(current_price_dec),
+                    float(market_value),
+                    float(total_cost),
+                    float(unrealized_pnl),
+                    float(unrealized_return_pct),
+                    float(portfolio_weight_pct),
+                    float(total_portfolio_value),
+                ),
+            )
+            count += 1
+
+    conn.commit()
+    return count
+
+
+def _get_historical_prices(
+    conn: pymysql.connections.Connection,
+    target_date: date,
+) -> dict:
+    """
+    Get last trade prices for all stocks on or before target_date.
+
+    Returns:
+        Dict mapping (stock_code, crd_class) -> price
+    """
+    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT t1.stk_cd, t1.crd_class, t1.cntr_uv as price
+            FROM account_trade_history t1
+            INNER JOIN (
+                SELECT stk_cd, crd_class, MAX(trade_date) as max_date
+                FROM account_trade_history
+                WHERE trade_date <= %s
+                GROUP BY stk_cd, crd_class
+            ) t2 ON t1.stk_cd = t2.stk_cd
+                AND t1.crd_class = t2.crd_class
+                AND t1.trade_date = t2.max_date
+            """,
+            (target_date,),
+        )
+        rows = cur.fetchall()
+
+    return {(r["stk_cd"], r["crd_class"]): r["price"] for r in rows}

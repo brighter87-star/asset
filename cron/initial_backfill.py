@@ -34,7 +34,7 @@ from services.kiwoom_service import (
     sync_market_index_from_kiwoom,
 )
 from services.lot_service import construct_daily_lots, update_lot_metrics
-from services.portfolio_service import create_portfolio_snapshot
+from services.portfolio_service import create_portfolio_snapshot, backfill_portfolio_snapshots
 
 
 def initial_backfill(start_date: date):
@@ -95,9 +95,16 @@ def initial_backfill(start_date: date):
         print("\n[STEP 8] Updating lot metrics...")
         update_lot_metrics(conn, end_date)
 
-        # Step 9: Create portfolio snapshot
-        print("\n[STEP 9] Creating portfolio snapshot...")
+        # Step 9: Create portfolio snapshot (today only)
+        print("\n[STEP 9] Creating portfolio snapshot (today)...")
         create_portfolio_snapshot(conn, end_date)
+
+        # Step 10: Backfill portfolio snapshots from lots (2026-01-02 onwards)
+        # Since daily_lots is reconstructed from trade history, portfolio_snapshot
+        # should start from 2026-01-02 (first trading day of 2026)
+        print("\n[STEP 10] Backfilling portfolio snapshots from lots...")
+        portfolio_start = date(2026, 1, 2)  # First trading day of 2026
+        backfill_portfolio_snapshots(conn, portfolio_start, end_date)
 
         # Get actual counts from DB
         with conn.cursor() as cur:
@@ -111,8 +118,10 @@ def initial_backfill(start_date: date):
             index_count = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM daily_lots")
             lot_count = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM portfolio_snapshot WHERE snapshot_date = %s", (end_date,))
+            cur.execute("SELECT COUNT(*) FROM portfolio_snapshot")
             portfolio_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(DISTINCT snapshot_date) FROM portfolio_snapshot")
+            portfolio_days = cur.fetchone()[0]
 
         print("\n" + "=" * 80)
         print("INITIAL BACKFILL COMPLETE!")
@@ -126,7 +135,7 @@ def initial_backfill(start_date: date):
         print(f"  - Daily snapshots: {snapshot_count} records")
         print(f"  - Market index: {index_count} records")
         print(f"  - Lots: {lot_count} records")
-        print(f"  - Portfolio positions (today): {portfolio_count} records")
+        print(f"  - Portfolio positions: {portfolio_count} records ({portfolio_days} days)")
 
     except Exception as e:
         print(f"\n[ERROR] Initial backfill failed: {e}")
