@@ -526,12 +526,6 @@ def sync_trade_history_from_kiwoom(
         start_dt = datetime.strptime(start_date, "%Y%m%d")
         end_dt = datetime.today()
 
-        # Clear existing data
-        with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE account_trade_history")
-        conn.commit()
-        print(f"✓ Cleared existing trade history")
-
         # Fetch trades for each day from start_date to today
         all_trades = []
         current_dt = start_dt
@@ -544,9 +538,9 @@ def sync_trade_history_from_kiwoom(
                 daily_trades = client.get_account_trade_history(start_date=date_str)
                 if daily_trades:
                     all_trades.extend(daily_trades)
-                    print(f"    ✓ Found {len(daily_trades)} trades")
+                    print(f"    [OK] Found {len(daily_trades)} trades")
             except Exception as e:
-                print(f"    ⚠ Failed to fetch trades for {date_str}: {e}")
+                print(f"    [WARN] Failed to fetch trades for {date_str}: {e}")
                 # Continue with next date even if one day fails
 
             current_dt += timedelta(days=1)
@@ -555,9 +549,9 @@ def sync_trade_history_from_kiwoom(
             print("No trade history found from Kiwoom API")
             return 0
 
-        # Insert new records
+        # Insert new records (IGNORE duplicates - idempotent)
         insert_sql = """
-            INSERT INTO account_trade_history (
+            INSERT IGNORE INTO account_trade_history (
                 ord_no, stk_cd, stk_nm, io_tp_nm, crd_class,
                 trade_date, ord_tm, cntr_qty, cntr_uv, loan_dt
             )
@@ -570,19 +564,15 @@ def sync_trade_history_from_kiwoom(
         inserted_count = 0
         with conn.cursor() as cur:
             for trade in all_trades:
-                try:
-                    cur.execute(insert_sql, trade)
-                    inserted_count += 1
-                except pymysql.err.IntegrityError:
-                    # Skip duplicate entries
-                    continue
+                cur.execute(insert_sql, trade)
+                inserted_count += cur.rowcount  # Only counts actually inserted rows
 
         conn.commit()
-        print(f"✓ Inserted {inserted_count} trade records from Kiwoom API")
+        print(f"[OK] Inserted {inserted_count} new trade records from Kiwoom API")
         return inserted_count
 
     except Exception as e:
-        print(f"✗ Failed to sync trade history: {e}")
+        print(f"[ERROR] Failed to sync trade history: {e}")
         raise
 
 
