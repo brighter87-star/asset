@@ -519,6 +519,7 @@ def sync_trade_history_from_kiwoom(
 
     try:
         from datetime import datetime, timedelta
+        import time
 
         client = KiwoomAPIClient()
 
@@ -534,16 +535,28 @@ def sync_trade_history_from_kiwoom(
             date_str = current_dt.strftime("%Y%m%d")
             print(f"  Fetching trades for {date_str}...")
 
-            try:
-                daily_trades = client.get_account_trade_history(start_date=date_str)
-                if daily_trades:
-                    all_trades.extend(daily_trades)
-                    print(f"    [OK] Found {len(daily_trades)} trades")
-            except Exception as e:
-                print(f"    [WARN] Failed to fetch trades for {date_str}: {e}")
-                # Continue with next date even if one day fails
+            # Retry logic for rate limiting
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    daily_trades = client.get_account_trade_history(start_date=date_str)
+                    if daily_trades:
+                        all_trades.extend(daily_trades)
+                        print(f"    [OK] Found {len(daily_trades)} trades")
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    if "429" in str(e):
+                        wait_time = (attempt + 1) * 2  # 2, 4, 6 seconds
+                        print(f"    [RATE LIMIT] Waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+                        if attempt == max_retries - 1:
+                            print(f"    [WARN] Failed after {max_retries} retries: {e}")
+                    else:
+                        print(f"    [WARN] Failed to fetch trades for {date_str}: {e}")
+                        break  # Non-rate-limit error, don't retry
 
             current_dt += timedelta(days=1)
+            time.sleep(0.5)  # Rate limit: 0.5s delay between requests
 
         if not all_trades:
             print("No trade history found from Kiwoom API")
@@ -1054,6 +1067,10 @@ def backfill_daily_snapshots(
                 print(f"[{current_date}] Non-trading day - Failed to check cash flow: {e}")
 
         current_date += timedelta(days=1)
+
+        # Rate limit: delay between API calls
+        import time
+        time.sleep(0.5)
 
     print("=" * 80)
     print(f"Backfill complete: {synced_count} synced")
