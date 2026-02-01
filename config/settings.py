@@ -1,29 +1,36 @@
-import os
-from pathlib import Path
+"""
+Settings for asset management system.
+All sensitive values are loaded from .env file.
+"""
 
-from dotenv import load_dotenv
+from pathlib import Path
 from pydantic_settings import BaseSettings
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
 
 
 class Settings(BaseSettings):
+    """
+    Application settings loaded from .env file.
+    Create a .env file in the project root with your credentials.
+    See .env.example for template.
+    """
+
     # Kiwoom API credentials
     APP_KEY: str
     SECRET_KEY: str
     BASE_URL: str
-    SOCKET_URL: str = ""  # Optional, default to empty string
+    SOCKET_URL: str = ""  # Optional
     ACNT_API_ID: str
 
-    # Database configuration (asset DB)
-    DB_HOST: str
+    # Database configuration
+    DB_HOST: str = "localhost"
     DB_USER: str
     DB_PASSWORD: str
-    DB_NAME: str = "asset"  # Default to 'asset' database
+    DB_NAME: str = "asset"
 
     model_config = {
-        "env_file": ".env",
+        "env_file": str(BASE_DIR / ".env"),
         "env_file_encoding": "utf-8",
-        "extra": "ignore",  # Allow extra fields from .env
+        "extra": "ignore",
     }

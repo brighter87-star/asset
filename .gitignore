@@ -12,10 +12,9 @@ ENV/
 *.db
 *.sqlite
 
-# Environment variables and config
+# Environment variables (contains secrets)
 .env
 .env.remote
-config/settings.py
 
 # IDE
 .vscode/

@@ -3,23 +3,22 @@
 ## Git 업로드 전 체크리스트
 
 ```bash
-# 1. .gitignore 확인
-cat .gitignore
-
-# 2. settings.py가 Git에서 제외되었는지 확인
+# 1. .env 파일이 Git에서 제외되었는지 확인
 git status
 
-# 3. settings.py.example이 있는지 확인
-ls config/settings.py.example
+# 2. .env.example이 있는지 확인
+ls .env.example
 
-# 4. Git에 추가할 파일들 확인
+# 3. Git에 추가할 파일들 확인
 git add .
 git status
 
-# 5. 커밋 및 푸시
+# 4. 커밋 및 푸시
 git commit -m "Initial commit: asset management system"
 git push origin main
 ```
+
+⚠️ **중요**: `.env` 파일은 절대 Git에 올리지 마세요! (API 키가 포함되어 있습니다)
 
 ## 서버에서 실행 (요약)
 
@@ -33,17 +32,20 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# 3. 설정 파일 생성
-cp config/settings.py.example config/settings.py
-nano config/settings.py  # 실제 값으로 수정
+# 3. .env 파일 생성 (중요!)
+cp .env.example .env
+nano .env  # 실제 API 키와 DB 정보 입력
 
 # 4. 데이터베이스 스키마 적용
 mysql -u user -p asset < db/schema.sql
 
-# 5. 테스트 실행
+# 5. 데이터베이스 컬럼 추가
+python add_columns_to_server.py
+
+# 6. 테스트 실행
 python sync_current_data.py
 
-# 6. Cron 설정 (선택사항)
+# 7. Cron 설정 (선택사항)
 crontab -e
 # 추가: 0 16 * * * cd ~/asset && ~/asset/venv/bin/python sync_current_data.py >> ~/asset/logs/sync.log 2>&1
 mkdir -p ~/asset/logs
