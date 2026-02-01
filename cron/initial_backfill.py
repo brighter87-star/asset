@@ -89,8 +89,7 @@ def initial_backfill(start_date: date):
 
         # Step 7: Construct daily lots
         print("\n[STEP 7] Constructing daily lots...")
-        lot_count = construct_daily_lots(conn)
-        print(f"         Lots: {lot_count}")
+        construct_daily_lots(conn)
 
         # Step 8: Update lot metrics
         print("\n[STEP 8] Updating lot metrics...")
@@ -98,22 +97,36 @@ def initial_backfill(start_date: date):
 
         # Step 9: Create portfolio snapshot
         print("\n[STEP 9] Creating portfolio snapshot...")
-        portfolio_count = create_portfolio_snapshot(conn, end_date)
-        print(f"         Portfolio positions: {portfolio_count}")
+        create_portfolio_snapshot(conn, end_date)
+
+        # Get actual counts from DB
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM account_trade_history")
+            trade_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM holdings WHERE snapshot_date = %s", (end_date,))
+            holdings_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM daily_portfolio_snapshot")
+            snapshot_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM market_index")
+            index_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM daily_lots")
+            lot_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM portfolio_snapshot WHERE snapshot_date = %s", (end_date,))
+            portfolio_count = cur.fetchone()[0]
 
         print("\n" + "=" * 80)
         print("INITIAL BACKFILL COMPLETE!")
         print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 80)
 
-        # Summary
-        print("\nSummary:")
+        # Summary (actual DB counts)
+        print("\nSummary (DB counts):")
         print(f"  - Trade history: {trade_count} records")
-        print(f"  - Holdings: {holdings_count} records")
+        print(f"  - Holdings (today): {holdings_count} records")
         print(f"  - Daily snapshots: {snapshot_count} records")
         print(f"  - Market index: {index_count} records")
         print(f"  - Lots: {lot_count} records")
-        print(f"  - Portfolio positions: {portfolio_count} records")
+        print(f"  - Portfolio positions (today): {portfolio_count} records")
 
     except Exception as e:
         print(f"\n[ERROR] Initial backfill failed: {e}")
