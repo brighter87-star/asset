@@ -20,7 +20,9 @@ def _is_sell(io_tp_nm: Optional[str]) -> bool:
     """Check if trade is a sell."""
     if not io_tp_nm:
         return False
-    return "매도" in io_tp_nm and "매수" not in io_tp_nm
+    # "매도" transactions are sells
+    # "상환" (repayment) transactions also reduce positions (융자일괄상환, 신용상환현물, etc.)
+    return ("매도" in io_tp_nm or "상환" in io_tp_nm) and "매수" not in io_tp_nm
 
 
 def construct_daily_lots(
@@ -39,9 +41,9 @@ def construct_daily_lots(
     where_clauses = []
     params: Dict[str, Any] = {}
 
-    # Default start date: 2025-12-13 (after initial position on 12/12)
+    # Default start date: 2025-12-11
     if start_date is None:
-        start_date = "2025-12-13"
+        start_date = "2025-12-11"
 
     if start_date:
         where_clauses.append("trade_date >= %(start_date)s")
@@ -200,19 +202,38 @@ def _reduce_lots_lifo(
         # IMPORTANT: Only close lots that:
         # 1. Were bought BEFORE the sell date
         # 2. Have the SAME loan_dt (for CREDIT trades)
-        cur.execute(
-            """
-            SELECT lot_id, net_quantity
-            FROM daily_lots
-            WHERE stock_code = %s
-              AND crd_class = %s
-              AND (loan_dt = %s OR (loan_dt IS NULL AND %s = ''))
-              AND is_closed = FALSE
-              AND trade_date <= %s
-            ORDER BY trade_date DESC
-            """,
-            (stock_code, crd_class, loan_dt or None, loan_dt or '', sell_date),
-        )
+        # Special case: loan_dt=99991231 means "generic credit repayment"
+        # and should match ANY credit lot for this stock
+
+        if loan_dt == '99991231':
+            # Generic credit repayment - match any credit lot
+            cur.execute(
+                """
+                SELECT lot_id, net_quantity
+                FROM daily_lots
+                WHERE stock_code = %s
+                  AND crd_class = %s
+                  AND is_closed = FALSE
+                  AND trade_date <= %s
+                ORDER BY trade_date DESC
+                """,
+                (stock_code, crd_class, sell_date),
+            )
+        else:
+            # Normal case - match specific loan_dt
+            cur.execute(
+                """
+                SELECT lot_id, net_quantity
+                FROM daily_lots
+                WHERE stock_code = %s
+                  AND crd_class = %s
+                  AND (loan_dt = %s OR (loan_dt IS NULL AND %s = ''))
+                  AND is_closed = FALSE
+                  AND trade_date <= %s
+                ORDER BY trade_date DESC
+                """,
+                (stock_code, crd_class, loan_dt or None, loan_dt or '', sell_date),
+            )
 
         lots = cur.fetchall()
 
@@ -254,6 +275,12 @@ def _reduce_lots_lifo(
                     (new_qty, lot_id),
                 )
                 remaining = 0
+
+    # If there's still remaining quantity after processing all lots,
+    # it means we're selling shares that weren't tracked (bought before start_date)
+    # This is expected when reconstructing from a specific date (e.g., 2025-12-11)
+    if remaining > 0:
+        print(f"Warning: Sold {remaining} shares of {stock_code} without matching lots (likely bought before start_date)")
 
 
 def update_lot_metrics(conn: pymysql.connections.Connection, today: Optional[date] = None) -> int:
@@ -426,3 +453,80 @@ def get_open_lots(
         )
 
         return cur.fetchall()
+
+
+def construct_holdings_from_trades(
+    conn: pymysql.connections.Connection,
+    snapshot_date: Optional[date] = None,
+) -> None:
+    """
+    Construct holdings snapshot from daily_lots table.
+
+    This function calculates current holdings by aggregating open lots from daily_lots.
+    This approach automatically respects the LIFO lot tracking logic and special
+    cases like loan_dt=99991231 credit repayments.
+
+    Args:
+        conn: Database connection
+        snapshot_date: Date for the snapshot. If None, uses today.
+    """
+    if snapshot_date is None:
+        snapshot_date = date.today()
+
+    # Delete existing holdings for this snapshot_date
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM holdings WHERE snapshot_date = %s",
+            (snapshot_date,),
+        )
+
+    # Aggregate holdings from daily_lots
+    # Sum up all open lots that were created on or before snapshot_date
+    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                stock_code,
+                stock_name,
+                crd_class,
+                loan_dt,
+                SUM(net_quantity) as total_qty,
+                SUM(total_cost) / SUM(net_quantity) as avg_prc,
+                MAX(current_price) as cur_prc
+            FROM daily_lots
+            WHERE is_closed = FALSE
+              AND trade_date <= %s
+            GROUP BY stock_code, stock_name, crd_class, loan_dt
+            HAVING total_qty > 0
+            """,
+            (snapshot_date,),
+        )
+
+        holdings = cur.fetchall()
+
+    # Insert holdings
+    insert_sql = """
+        INSERT INTO holdings (
+            snapshot_date, stk_cd, stk_nm, rmnd_qty,
+            avg_prc, cur_prc, loan_dt, crd_class
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """
+
+    with conn.cursor() as cur:
+        for holding in holdings:
+            cur.execute(
+                insert_sql,
+                (
+                    snapshot_date,
+                    holding['stock_code'],
+                    holding['stock_name'],
+                    int(holding['total_qty']),
+                    int(holding['avg_prc']) if holding['avg_prc'] else 0,
+                    int(holding['cur_prc']) if holding['cur_prc'] else 0,
+                    holding['loan_dt'] if holding['loan_dt'] else None,
+                    holding['crd_class'],
+                ),
+            )
+
+    conn.commit()

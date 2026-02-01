@@ -32,10 +32,7 @@ class KiwoomAPIClient:
         if self.access_token:
             return self.access_token
 
-        url = f"{self.base_url}/oauth2/tokenP"
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
+        url = f"{self.base_url}/oauth2/token"
         data = {
             "grant_type": "client_credentials",
             "appkey": self.app_key,
@@ -43,10 +40,9 @@ class KiwoomAPIClient:
         }
 
         try:
-            response = requests.post(url, headers=headers, data=data, timeout=10)
+            response = requests.post(url, json=data)
             response.raise_for_status()
-            result = response.json()
-            self.access_token = result.get("access_token")
+            self.access_token = response.json()["token"]
             return self.access_token
         except Exception as e:
             print(f"✗ Failed to get access token: {e}")
@@ -64,115 +60,104 @@ class KiwoomAPIClient:
         """
         token = self.get_access_token()
 
-        # API endpoint for account trade history
-        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        # API endpoint for account trade history (kt00007)
+        url = f"{self.base_url}/api/dostk/acnt"
 
         headers = {
-            "Authorization": f"Bearer {token}",
-            "appKey": self.app_key,
-            "appSecret": self.secret_key,
-            "tr_id": "TTTC8434R",
-            "Content-Type": "application/json",
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'kt00007',
         }
 
-        params = {
-            "CANO": self.acnt_api_id,
-            "ACNT_PRDT_CD": "01",
-            "INQR_DVSN_CD": "00",
-            "INQR_DVSN_CD2": "00",
-            "CTX_AREA_FK": "",
-            "CTX_AREA_NK": "",
+        body = {
+            "ord_dt": start_date,  # 주문일자 (YYYYMMDD)
+            "qry_tp": "4",  # 조회구분
+            "stk_bond_tp": "0",  # 주식채권구분
+            "sell_tp": "0",  # 매도구분
+            "stk_cd": "",  # 종목코드
+            "fr_ord_no": "",
+            "dmst_stex_tp": "%",  # 국내외구분
         }
+
+        all_trades = []
+        cont_yn = "N"
+        next_key = ""
 
         try:
-            response = requests.get(url, headers=headers, params=params, timeout=10)
-            response.raise_for_status()
-            result = response.json()
+            while True:
+                # 연속 조회 헤더 설정
+                if cont_yn == "Y":
+                    headers["cont-yn"] = "Y"
+                    headers["next-key"] = next_key
 
-            if result.get("rt_cd") != "0":
-                print(f"API Error: {result.get('msg1')}")
-                return []
+                response = requests.post(url, headers=headers, json=body, timeout=10)
+                response.raise_for_status()
+                result = response.json()
 
-            # Parse trade records
-            trades = []
-            if "output1" in result:
-                for item in result["output1"]:
+                # Parse trade records
+                trades = result.get("acnt_ord_cntr_prps_dtl", [])
+                for item in trades:
+                    # Use the query date (start_date) as trade_date
+                    # API response may not have reliable date field
+                    trade_date_str = start_date if start_date else date.today().strftime("%Y%m%d")
+
                     trade = {
-                        "ord_no": item.get("ODNO"),
-                        "stk_cd": item.get("SLN_ORD_1"),
-                        "stk_nm": item.get("SLN_ORD_2", ""),
-                        "io_tp_nm": item.get("SL_TP_NM", ""),  # 매도/매수
-                        "crd_class": item.get("LOAN_DT") and "CREDIT" or "CASH",
-                        "trade_date": self._parse_date(item.get("ORD_DT")),
-                        "ord_tm": item.get("ORD_TM", ""),
-                        "cntr_qty": int(item.get("SL_ORD_QTY", 0)),
-                        "cntr_uv": int(item.get("SL_ORD_UNPR", 0)),
-                        "loan_dt": item.get("LOAN_DT"),
+                        "ord_no": item.get("ord_no"),
+                        "stk_cd": item.get("stk_cd"),
+                        "stk_nm": item.get("stk_nm", ""),
+                        "io_tp_nm": item.get("io_tp_nm", ""),
+                        "crd_class": "CREDIT" if item.get("loan_dt") else "CASH",
+                        "trade_date": self._parse_date(trade_date_str),
+                        "ord_tm": item.get("ord_tm", ""),
+                        "cntr_qty": int(item.get("cntr_qty", 0)),
+                        "cntr_uv": int(item.get("cntr_uv", 0)),
+                        "loan_dt": item.get("loan_dt"),
                     }
-                    trades.append(trade)
+                    all_trades.append(trade)
 
-            return trades
+                # Check for continuation
+                cont_yn = response.headers.get("cont-yn", "N")
+                next_key = response.headers.get("next-key", "")
+
+                if cont_yn != "Y":
+                    break
+
+            return all_trades
 
         except Exception as e:
             print(f"✗ Failed to fetch trade history: {e}")
             raise
 
-    def get_holdings(self) -> List[Dict[str, Any]]:
+    def get_holdings(self) -> Dict[str, Any]:
         """
         Fetch current holdings from Kiwoom API.
 
         Returns:
-            List of holding records for today
+            Full holdings data from API response
         """
         token = self.get_access_token()
 
-        # API endpoint for holdings
-        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
+        # API endpoint for account status (kt00004)
+        url = f"{self.base_url}/api/dostk/acnt"
 
         headers = {
-            "Authorization": f"Bearer {token}",
-            "appKey": self.app_key,
-            "appSecret": self.secret_key,
-            "tr_id": "TTTC8434R",
-            "Content-Type": "application/json",
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'kt00004',
         }
 
-        params = {
-            "CANO": self.acnt_api_id,
-            "ACNT_PRDT_CD": "01",
-            "AFHR_FLPR_YN": "N",
-            "OFL_YN": "",
-            "INQR_DVSN": "02",
+        body = {
+            "qry_tp": "1",  # 조회구분
+            "dmst_stex_tp": "KRX",  # 국내외구분
         }
 
         try:
-            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response = requests.post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
-            if result.get("rt_cd") != "0":
-                print(f"API Error: {result.get('msg1')}")
-                return []
-
-            # Parse holdings
-            holdings = []
-            snapshot_date = date.today()
-
-            if "output1" in result:
-                for item in result["output1"]:
-                    holding = {
-                        "snapshot_date": snapshot_date,
-                        "stk_cd": item.get("PDNO"),
-                        "stk_nm": item.get("PRDT_NAME", ""),
-                        "rmnd_qty": int(item.get("HLDG_QTY", 0)),
-                        "avg_prc": int(item.get("PCHS_AVG_PRIC", 0)),
-                        "cur_prc": int(item.get("PRPR", 0)),
-                        "loan_dt": item.get("LOAN_DT"),
-                        "crd_class": item.get("LOAN_DT") and "CREDIT" or "CASH",
-                    }
-                    holdings.append(holding)
-
-            return holdings
+            # Return full response for detailed processing
+            return result
 
         except Exception as e:
             print(f"✗ Failed to fetch holdings: {e}")
@@ -183,49 +168,31 @@ class KiwoomAPIClient:
         Fetch account summary from Kiwoom API.
 
         Returns:
-            Account summary with portfolio value and invested amount
+            Full account summary data including all fields
         """
         token = self.get_access_token()
 
-        # API endpoint for account summary
-        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
+        # API endpoint for account status (kt00004)
+        url = f"{self.base_url}/api/dostk/acnt"
 
         headers = {
-            "Authorization": f"Bearer {token}",
-            "appKey": self.app_key,
-            "appSecret": self.secret_key,
-            "tr_id": "TTTC8434R",
-            "Content-Type": "application/json",
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'kt00004',
         }
 
-        params = {
-            "CANO": self.acnt_api_id,
-            "ACNT_PRDT_CD": "01",
-            "AFHR_FLPR_YN": "N",
-            "OFL_YN": "",
-            "INQR_DVSN": "02",
+        body = {
+            "qry_tp": "1",  # 조회구분
+            "dmst_stex_tp": "KRX",  # 국내외구분
         }
 
         try:
-            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response = requests.post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
-            if result.get("rt_cd") != "0":
-                print(f"API Error: {result.get('msg1')}")
-                return {}
-
-            # Parse account summary from output2
-            if "output2" in result:
-                summary = result["output2"][0] if result["output2"] else {}
-                return {
-                    "snapshot_date": date.today(),
-                    "aset_evlt_amt": int(summary.get("TOTA_ASST_EVLU_AMNT", 0)),
-                    "tot_est_amt": int(summary.get("TOTA_ASST_EVLU_AMNT", 0)),
-                    "invt_bsamt": int(summary.get("PCHS_SMAMT", 0)),
-                }
-
-            return {}
+            # Return full response for detailed processing
+            return result
 
         except Exception as e:
             print(f"✗ Failed to fetch account summary: {e}")
@@ -248,31 +215,57 @@ class KiwoomAPIClient:
 
 def sync_trade_history_from_kiwoom(
     conn: pymysql.connections.Connection,
+    start_date: str = "20251211",
 ) -> int:
     """
     Fetch trade history from Kiwoom API and save to asset database.
 
     Args:
         conn: Database connection
+        start_date: Start date in YYYYMMDD format (default: 20251211)
 
     Returns:
         Number of records synced
     """
-    print("Fetching trade history from Kiwoom API...")
+    print(f"Fetching trade history from Kiwoom API (from {start_date})...")
 
     try:
-        client = KiwoomAPIClient()
-        trades = client.get_account_trade_history()
+        from datetime import datetime, timedelta
 
-        if not trades:
-            print("No trade history found from Kiwoom API")
-            return 0
+        client = KiwoomAPIClient()
+
+        # Parse start date
+        start_dt = datetime.strptime(start_date, "%Y%m%d")
+        end_dt = datetime.today()
 
         # Clear existing data
         with conn.cursor() as cur:
             cur.execute("TRUNCATE TABLE account_trade_history")
         conn.commit()
         print(f"✓ Cleared existing trade history")
+
+        # Fetch trades for each day from start_date to today
+        all_trades = []
+        current_dt = start_dt
+
+        while current_dt <= end_dt:
+            date_str = current_dt.strftime("%Y%m%d")
+            print(f"  Fetching trades for {date_str}...")
+
+            try:
+                daily_trades = client.get_account_trade_history(start_date=date_str)
+                if daily_trades:
+                    all_trades.extend(daily_trades)
+                    print(f"    ✓ Found {len(daily_trades)} trades")
+            except Exception as e:
+                print(f"    ⚠ Failed to fetch trades for {date_str}: {e}")
+                # Continue with next date even if one day fails
+
+            current_dt += timedelta(days=1)
+
+        if not all_trades:
+            print("No trade history found from Kiwoom API")
+            return 0
 
         # Insert new records
         insert_sql = """
@@ -286,17 +279,19 @@ def sync_trade_history_from_kiwoom(
             )
         """
 
+        inserted_count = 0
         with conn.cursor() as cur:
-            for trade in trades:
+            for trade in all_trades:
                 try:
                     cur.execute(insert_sql, trade)
+                    inserted_count += 1
                 except pymysql.err.IntegrityError:
                     # Skip duplicate entries
                     continue
 
         conn.commit()
-        print(f"✓ Inserted {len(trades)} trade records from Kiwoom API")
-        return len(trades)
+        print(f"✓ Inserted {inserted_count} trade records from Kiwoom API")
+        return inserted_count
 
     except Exception as e:
         print(f"✗ Failed to sync trade history: {e}")
@@ -318,14 +313,32 @@ def sync_holdings_from_kiwoom(
     print("Fetching holdings from Kiwoom API...")
 
     try:
+        import json
         client = KiwoomAPIClient()
-        holdings = client.get_holdings()
+        data = client.get_holdings()
 
-        if not holdings:
+        if not data:
             print("No holdings found from Kiwoom API")
             return 0
 
         snapshot_date = date.today()
+
+        # Helper functions
+        def to_int(val):
+            if val is None or val == '':
+                return None
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return None
+
+        def to_float(val):
+            if val is None or val == '':
+                return None
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return None
 
         # Clear existing data for today
         with conn.cursor() as cur:
@@ -336,38 +349,76 @@ def sync_holdings_from_kiwoom(
         conn.commit()
         print(f"✓ Cleared existing holdings for {snapshot_date}")
 
-        # Insert new records
+        # Parse holdings from stk_acnt_evlt_prst array
+        holdings_data = data.get("stk_acnt_evlt_prst", [])
+
+        if not holdings_data:
+            print("No holdings data in API response")
+            return 0
+
+        # Insert new records with all fields
         insert_sql = """
             INSERT INTO holdings (
-                snapshot_date, stk_cd, stk_nm, rmnd_qty,
-                avg_prc, cur_prc, loan_dt, crd_class
+                snapshot_date,
+                stk_cd, stk_nm, rmnd_qty,
+                avg_prc, cur_prc, evlt_amt,
+                pl_amt, pl_rt,
+                loan_dt, crd_class,
+                pur_amt, setl_remn,
+                pred_buyq, pred_sellq,
+                tdy_buyq, tdy_sellq,
+                raw_json
             )
             VALUES (
-                %(snapshot_date)s, %(stk_cd)s, %(stk_nm)s, %(rmnd_qty)s,
-                %(avg_prc)s, %(cur_prc)s, %(loan_dt)s, %(crd_class)s
+                %s,
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s,
+                %s, %s,
+                %s, %s,
+                %s, %s,
+                %s, %s,
+                %s
             )
         """
 
         with conn.cursor() as cur:
-            for holding in holdings:
-                try:
-                    cur.execute(insert_sql, holding)
-                except pymysql.err.IntegrityError:
-                    # Update if exists
-                    update_sql = """
-                        UPDATE holdings
-                        SET stk_nm = %(stk_nm)s, rmnd_qty = %(rmnd_qty)s,
-                            avg_prc = %(avg_prc)s, cur_prc = %(cur_prc)s, crd_class = %(crd_class)s
-                        WHERE snapshot_date = %(snapshot_date)s AND stk_cd = %(stk_cd)s AND loan_dt <=> %(loan_dt)s
-                    """
-                    cur.execute(update_sql, holding)
+            for item in holdings_data:
+                loan_dt = item.get("loan_dt") or None
+                crd_class = "CREDIT" if loan_dt else "CASH"
+
+                cur.execute(
+                    insert_sql,
+                    (
+                        snapshot_date,
+                        item.get("stk_cd"),
+                        item.get("stk_nm", ""),
+                        to_int(item.get("rmnd_qty")),
+                        to_int(item.get("avg_prc")),
+                        to_int(item.get("cur_prc")),
+                        to_int(item.get("evlt_amt")),
+                        to_int(item.get("pl_amt")),
+                        to_float(item.get("pl_rt")),
+                        loan_dt,
+                        crd_class,
+                        to_int(item.get("pur_amt")),
+                        to_int(item.get("setl_remn")),
+                        to_int(item.get("pred_buyq")),
+                        to_int(item.get("pred_sellq")),
+                        to_int(item.get("tdy_buyq")),
+                        to_int(item.get("tdy_sellq")),
+                        json.dumps(item, ensure_ascii=False),
+                    ),
+                )
 
         conn.commit()
-        print(f"✓ Inserted/Updated {len(holdings)} holding records from Kiwoom API")
-        return len(holdings)
+        print(f"✓ Inserted {len(holdings_data)} holding records from Kiwoom API")
+        return len(holdings_data)
 
     except Exception as e:
         print(f"✗ Failed to sync holdings: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 
@@ -386,29 +437,94 @@ def sync_account_summary_from_kiwoom(
     print("Fetching account summary from Kiwoom API...")
 
     try:
+        import json
         client = KiwoomAPIClient()
-        summary = client.get_account_summary()
+        data = client.get_account_summary()
 
-        if not summary:
+        if not data:
             print("No account summary found from Kiwoom API")
             return 0
 
-        # Insert or update account summary
+        snapshot_date = date.today()
+
+        # Helper function to safely convert to int
+        def to_int(val):
+            if val is None or val == '':
+                return None
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return None
+
+        # Helper function to safely convert to float
+        def to_float(val):
+            if val is None or val == '':
+                return None
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return None
+
+        # Delete existing record for today
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM account_summary WHERE snapshot_date = %s", (snapshot_date,))
+
+        # Insert full account summary with all fields
         insert_sql = """
             INSERT INTO account_summary (
-                snapshot_date, aset_evlt_amt, tot_est_amt, invt_bsamt
+                snapshot_date,
+                acnt_nm, brch_nm,
+                entr, d2_entra,
+                tot_est_amt, aset_evlt_amt, tot_pur_amt,
+                prsm_dpst_aset_amt, tot_grnt_sella,
+                tdy_lspft_amt, invt_bsamt, lspft_amt,
+                tdy_lspft, lspft2, lspft,
+                tdy_lspft_rt, lspft_ratio, lspft_rt,
+                return_code, return_msg,
+                raw_json
             )
             VALUES (
-                %(snapshot_date)s, %(aset_evlt_amt)s, %(tot_est_amt)s, %(invt_bsamt)s
+                %s,
+                %s, %s,
+                %s, %s,
+                %s, %s, %s,
+                %s, %s,
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s,
+                %s
             )
-            ON DUPLICATE KEY UPDATE
-                aset_evlt_amt = VALUES(aset_evlt_amt),
-                tot_est_amt = VALUES(tot_est_amt),
-                invt_bsamt = VALUES(invt_bsamt)
         """
 
         with conn.cursor() as cur:
-            cur.execute(insert_sql, summary)
+            cur.execute(
+                insert_sql,
+                (
+                    snapshot_date,
+                    data.get("acnt_nm"),
+                    data.get("brch_nm"),
+                    to_int(data.get("entr")),
+                    to_int(data.get("d2_entra")),
+                    to_int(data.get("tot_est_amt")),
+                    to_int(data.get("aset_evlt_amt")),
+                    to_int(data.get("tot_pur_amt")),
+                    to_int(data.get("prsm_dpst_aset_amt")),
+                    to_int(data.get("tot_grnt_sella")),
+                    to_int(data.get("tdy_lspft_amt")),
+                    to_int(data.get("invt_bsamt")),
+                    to_int(data.get("lspft_amt")),
+                    to_int(data.get("tdy_lspft")),
+                    to_int(data.get("lspft2")),
+                    to_int(data.get("lspft")),
+                    to_float(data.get("tdy_lspft_rt")),
+                    to_float(data.get("lspft_ratio")),
+                    to_float(data.get("lspft_rt")),
+                    to_int(data.get("return_code")),
+                    data.get("return_msg"),
+                    json.dumps(data, ensure_ascii=False),
+                ),
+            )
 
         conn.commit()
         print(f"✓ Synced account summary from Kiwoom API")
@@ -416,4 +532,6 @@ def sync_account_summary_from_kiwoom(
 
     except Exception as e:
         print(f"✗ Failed to sync account summary: {e}")
+        import traceback
+        traceback.print_exc()
         raise

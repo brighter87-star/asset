@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS daily_lots (
     stock_code VARCHAR(20) NOT NULL COMMENT '종목코드',
     stock_name VARCHAR(100) COMMENT '종목명',
     crd_class VARCHAR(10) NOT NULL COMMENT '신용구분 (CASH/CREDIT)',
+    loan_dt VARCHAR(20) COMMENT '대출일자',
     trade_date DATE NOT NULL COMMENT '거래일자',
     net_quantity INT NOT NULL COMMENT '순매수량',
     avg_purchase_price DECIMAL(15, 2) NOT NULL COMMENT '평균매수가',
@@ -34,7 +35,7 @@ CREATE TABLE IF NOT EXISTS daily_lots (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uk_daily_lot (stock_code, crd_class, trade_date),
+    UNIQUE KEY uk_daily_lot (stock_code, crd_class, loan_dt, trade_date),
     INDEX idx_stock_code (stock_code),
     INDEX idx_is_closed (is_closed),
     INDEX idx_trade_date (trade_date)

@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 from db.connection import get_connection
 from services.data_sync_service import sync_all
-from services.lot_service import construct_daily_lots, update_lot_metrics
+from services.lot_service import construct_daily_lots, construct_holdings_from_trades, update_lot_metrics
 from services.portfolio_service import create_portfolio_snapshot
 from utils.krx_calendar import is_korea_trading_day_by_samsung
 
@@ -21,8 +21,9 @@ def main():
     1. Check if today is a trading day
     2. (Optional) Sync data from Kiwoom API to asset database (only with --init flag)
     3. Construct/update daily lots
-    4. Update lot metrics (prices, returns, holding days)
-    5. Create portfolio snapshot
+    4. Construct holdings from trade history
+    5. Update lot metrics (prices, returns, holding days)
+    6. Create portfolio snapshot
     """
     print("=" * 60)
     print("Asset Management Pipeline - Daily Batch")
@@ -72,7 +73,7 @@ def main():
         print(f"\n[1/4] Skipping Kiwoom API sync (use --init flag for initial sync)")
 
     # Step 2: Construct daily lots
-    print(f"\n[2/4] Constructing daily lots...")
+    print(f"\n[2/5] Constructing daily lots...")
     conn = get_connection()
     try:
         # For initial run, process all history
@@ -86,8 +87,20 @@ def main():
         traceback.print_exc()
         return
 
-    # Step 3: Update lot metrics
-    print(f"\n[3/4] Updating lot metrics...")
+    # Step 3: Construct holdings from trade history
+    print(f"\n[3/5] Constructing holdings from trade history...")
+    try:
+        construct_holdings_from_trades(conn, snapshot_date=today)
+        print("✓ Holdings constructed from account_trade_history")
+    except Exception as e:
+        conn.close()
+        print(f"✗ Holdings construction failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+
+    # Step 4: Update lot metrics
+    print(f"\n[4/5] Updating lot metrics...")
     try:
         updated_count = update_lot_metrics(conn, today)
         print(f"✓ Updated {updated_count} lot(s)")
@@ -98,8 +111,8 @@ def main():
         traceback.print_exc()
         return
 
-    # Step 4: Create portfolio snapshot
-    print(f"\n[4/4] Creating portfolio snapshot...")
+    # Step 5: Create portfolio snapshot
+    print(f"\n[5/5] Creating portfolio snapshot...")
     try:
         snapshot_count = create_portfolio_snapshot(conn, today)
         print(f"✓ Created snapshot with {snapshot_count} position(s)")
