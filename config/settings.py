@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     APP_KEY: str
     SECRET_KEY: str
     BASE_URL: str
-    SOCKET_URL: str
+    SOCKET_URL: str = ""  # Optional, default to empty string
     ACNT_API_ID: str
 
     # Database configuration (asset DB)
@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     DB_PASSWORD: str
     DB_NAME: str = "asset"  # Default to 'asset' database
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",  # Allow extra fields from .env
+    }
