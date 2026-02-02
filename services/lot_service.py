@@ -107,7 +107,14 @@ def construct_daily_lots(
         if existing_qty > 0 and sell_qty > 0:
             # There are existing lots - process sells to close them first
             close_qty = min(sell_qty, existing_qty)
-            _reduce_lots_lifo(conn, stock_code, crd_class, loan_dt, close_qty, trade_date)
+
+            # Calculate average sell price
+            total_sell_value = sum(
+                (t["cntr_qty"] or 0) * (t["cntr_uv"] or 0) for t in sells
+            )
+            avg_sell_price = Decimal(total_sell_value) / Decimal(sell_qty) if sell_qty > 0 else Decimal(0)
+
+            _reduce_lots_lifo(conn, stock_code, crd_class, loan_dt, close_qty, trade_date, avg_sell_price)
 
             # Remaining sells offset same-day buys
             remaining_sell = sell_qty - close_qty
@@ -227,6 +234,7 @@ def _reduce_lots_lifo(
     loan_dt: str,
     sell_qty: int,
     sell_date: date,
+    sell_price: Decimal = Decimal(0),
 ) -> None:
     """
     Reduce existing lots using LIFO (Last In First Out).
@@ -238,6 +246,7 @@ def _reduce_lots_lifo(
         loan_dt: Loan date (for CREDIT) or empty string (for CASH)
         sell_qty: Quantity to reduce
         sell_date: Date of the sell transaction
+        sell_price: Average sell price per share
     """
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         # Get open lots ordered by trade_date DESC (LIFO)
@@ -251,7 +260,7 @@ def _reduce_lots_lifo(
             # Generic credit repayment - match any credit lot
             cur.execute(
                 """
-                SELECT lot_id, net_quantity
+                SELECT lot_id, net_quantity, trade_date, avg_purchase_price, total_cost
                 FROM daily_lots
                 WHERE stock_code = %s
                   AND crd_class = %s
@@ -266,7 +275,7 @@ def _reduce_lots_lifo(
             # Use empty string for NULL loan_dt to properly match
             cur.execute(
                 """
-                SELECT lot_id, net_quantity
+                SELECT lot_id, net_quantity, trade_date, avg_purchase_price, total_cost
                 FROM daily_lots
                 WHERE stock_code = %s
                   AND crd_class = %s
@@ -289,33 +298,54 @@ def _reduce_lots_lifo(
 
             lot_id = lot["lot_id"]
             lot_qty = lot["net_quantity"]
+            lot_trade_date = lot["trade_date"]
+            lot_avg_price = Decimal(str(lot["avg_purchase_price"])) if lot["avg_purchase_price"] else Decimal(0)
+            lot_total_cost = Decimal(str(lot["total_cost"])) if lot["total_cost"] else Decimal(0)
+
+            # Calculate holding days
+            if isinstance(lot_trade_date, date):
+                holding_days = (sell_date - lot_trade_date).days
+            else:
+                holding_days = 0
 
             if lot_qty <= remaining:
                 # Fully close this lot
+                # Calculate realized PnL for the full lot
+                realized_pnl = (sell_price - lot_avg_price) * Decimal(lot_qty)
+
                 cur.execute(
                     """
                     UPDATE daily_lots
                     SET is_closed = TRUE,
                         closed_date = %s,
                         net_quantity = 0,
+                        current_price = %s,
+                        holding_days = %s,
+                        realized_pnl = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE lot_id = %s
                     """,
-                    (sell_date, lot_id),
+                    (sell_date, float(sell_price), holding_days, float(realized_pnl), lot_id),
                 )
                 remaining -= lot_qty
 
             else:
-                # Partially reduce this lot
+                # Partially reduce this lot - don't close, just reduce quantity
+                # For partial sells, we don't record realized PnL on the lot itself
+                # (it remains open with reduced quantity)
                 new_qty = lot_qty - remaining
+                # Adjust total_cost proportionally
+                new_total_cost = lot_avg_price * Decimal(new_qty)
+
                 cur.execute(
                     """
                     UPDATE daily_lots
                     SET net_quantity = %s,
+                        total_cost = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE lot_id = %s
                     """,
-                    (new_qty, lot_id),
+                    (new_qty, float(new_total_cost), lot_id),
                 )
                 remaining = 0
 
