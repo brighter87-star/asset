@@ -309,6 +309,7 @@ def _create_portfolio_snapshot_from_lots(
 
     # Get lots that were open on this date
     # A lot was open if: trade_date <= snapshot_date AND (is_closed=FALSE OR closed_date > snapshot_date)
+    # Use total_cost / avg_purchase_price to get original quantity (since net_quantity = 0 for closed lots)
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         cur.execute(
             """
@@ -316,13 +317,13 @@ def _create_portfolio_snapshot_from_lots(
                 stock_code,
                 MAX(stock_name) as stock_name,
                 crd_class,
-                SUM(net_quantity) as total_quantity,
-                SUM(total_cost) / SUM(net_quantity) as avg_cost_basis,
+                SUM(ROUND(total_cost / avg_purchase_price)) as total_quantity,
+                SUM(total_cost) / SUM(ROUND(total_cost / avg_purchase_price)) as avg_cost_basis,
                 SUM(total_cost) as total_cost
             FROM daily_lots
             WHERE trade_date <= %s
               AND (is_closed = FALSE OR closed_date > %s)
-              AND net_quantity > 0
+              AND total_cost > 0
             GROUP BY stock_code, crd_class
             HAVING total_quantity > 0
             ORDER BY stock_code
