@@ -181,10 +181,21 @@ CREATE TABLE portfolio_snapshot (
 CREATE TABLE daily_portfolio_snapshot (
     snapshot_date DATE PRIMARY KEY COMMENT '스냅샷 일자',
 
+    -- Cash balances
+    d2_entra BIGINT COMMENT 'D+2 예수금 (출금가능)',
+    entr BIGINT COMMENT 'D+0 예수금',
+
     -- Total assets
+    prsm_dpst_aset_amt BIGINT COMMENT '추정예탁자산 (청산시 총자산)',
+    tot_est_amt BIGINT COMMENT '총추정금액',
+    aset_evlt_amt BIGINT COMMENT '주식평가금액',
     day_stk_asst BIGINT COMMENT '추정자산 (청산시 총자산)',
     tot_pur_amt BIGINT COMMENT '총매입금액',
     tot_evlt_amt BIGINT COMMENT '총평가금액',
+
+    -- Margin/Credit
+    tot_grnt_sella BIGINT COMMENT '총융자금',
+    crd_int_npay_gold BIGINT COMMENT '신용이자미납금',
 
     -- Daily cash flows
     ina_amt BIGINT COMMENT '당일 입금액',
