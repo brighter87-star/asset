@@ -153,8 +153,13 @@ def view_portfolio(snapshot_date: Optional[date] = None):
               f"{format_currency(total_market_value):>15} {format_currency(total_pnl):>15} "
               f"{format_percentage(total_return_pct):>10} {'100.0%':>8}")
 
+        # Calculate stock exposure
+        stock_exposure_pct = (total_market_value / total_value * 100) if total_value > 0 else 0
+
         print("\n" + "=" * 100)
-        print(f"Total Portfolio Value: {format_currency(total_value)}")
+        print(f"Total Stock Value:     {format_currency(total_market_value)}")
+        print(f"Total Portfolio Value: {format_currency(total_value)} (추정자산)")
+        print(f"Stock Exposure:        {format_percentage(stock_exposure_pct, 1)}")
         print(f"Total Invested:        {format_currency(total_cost)}")
         print(f"Total P&L:             {format_currency(total_pnl)} ({format_percentage(total_return_pct)})")
         print("=" * 100)

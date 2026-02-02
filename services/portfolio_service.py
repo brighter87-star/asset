@@ -27,11 +27,11 @@ def create_portfolio_snapshot(
     if snapshot_date is None:
         snapshot_date = date.today()
 
-    # Get total portfolio value from account_summary
+    # Get total portfolio value from account_summary (추정자산 = 청산 기준 총자산)
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         cur.execute(
             """
-            SELECT aset_evlt_amt
+            SELECT prsm_dpst_aset_amt
             FROM account_summary
             WHERE snapshot_date = %s
             """,
@@ -40,11 +40,11 @@ def create_portfolio_snapshot(
 
         summary = cur.fetchone()
 
-    if not summary or not summary["aset_evlt_amt"]:
+    if not summary or not summary["prsm_dpst_aset_amt"]:
         print(f"Warning: No account summary found for {snapshot_date}")
         return 0
 
-    total_portfolio_value = Decimal(str(summary["aset_evlt_amt"]))
+    total_portfolio_value = Decimal(str(summary["prsm_dpst_aset_amt"]))
 
     # Get positions from holdings (actual current positions)
     # Aggregate by stock_code and crd_class (combining all loan_dt)
@@ -290,11 +290,11 @@ def _create_portfolio_snapshot_from_lots(
     - trade_date <= X (lot was created before or on that date)
     - AND (is_closed = FALSE OR closed_date > X) (lot wasn't closed yet at that time)
     """
-    # Get total portfolio value from daily_portfolio_snapshot
+    # Get total portfolio value from daily_portfolio_snapshot (추정자산 = 청산 기준 총자산)
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         cur.execute(
             """
-            SELECT day_stk_asst
+            SELECT prsm_dpst_aset_amt
             FROM daily_portfolio_snapshot
             WHERE snapshot_date = %s
             """,
@@ -302,10 +302,10 @@ def _create_portfolio_snapshot_from_lots(
         )
         snapshot = cur.fetchone()
 
-    if not snapshot or not snapshot["day_stk_asst"]:
+    if not snapshot or not snapshot["prsm_dpst_aset_amt"]:
         return 0
 
-    total_portfolio_value = Decimal(str(snapshot["day_stk_asst"]))
+    total_portfolio_value = Decimal(str(snapshot["prsm_dpst_aset_amt"]))
 
     # Get lots that were open on this date
     # A lot was open if: trade_date <= snapshot_date AND (is_closed=FALSE OR closed_date > snapshot_date)
