@@ -98,17 +98,31 @@ def construct_daily_lots(
 
         buy_qty = sum(t["cntr_qty"] or 0 for t in buys)
         sell_qty = sum(t["cntr_qty"] or 0 for t in sells)
-        net_qty = buy_qty - sell_qty
 
         stock_name = group[0]["stk_nm"]
 
-        if net_qty > 0:
-            # Net buy day - create new lot
+        # Check existing open lots for this stock
+        existing_qty = _get_existing_lot_quantity(conn, stock_code, crd_class, loan_dt, trade_date)
+
+        if existing_qty > 0 and sell_qty > 0:
+            # There are existing lots - process sells to close them first
+            close_qty = min(sell_qty, existing_qty)
+            _reduce_lots_lifo(conn, stock_code, crd_class, loan_dt, close_qty, trade_date)
+
+            # Remaining sells offset same-day buys
+            remaining_sell = sell_qty - close_qty
+            net_buy = buy_qty - remaining_sell
+        else:
+            # No existing lots - same-day trades net out
+            net_buy = buy_qty - sell_qty
+
+        # Create new lot if net buy
+        if net_buy > 0:
             total_buy_value = sum(
                 (t["cntr_qty"] or 0) * (t["cntr_uv"] or 0) for t in buys
             )
             avg_price = Decimal(total_buy_value) / Decimal(buy_qty) if buy_qty > 0 else Decimal(0)
-            total_cost = avg_price * Decimal(net_qty)
+            total_cost = avg_price * Decimal(net_buy)
 
             _insert_daily_lot(
                 conn,
@@ -117,25 +131,53 @@ def construct_daily_lots(
                 crd_class,
                 loan_dt,
                 trade_date,
-                net_qty,
+                net_buy,
                 avg_price,
                 total_cost,
             )
-
-        elif net_qty < 0:
-            # Net sell day - reduce existing lots (LIFO)
-            _reduce_lots_lifo(
-                conn,
-                stock_code,
-                crd_class,
-                loan_dt,
-                abs(net_qty),
-                trade_date,
-            )
-
-        # If net_qty == 0, no action needed (balanced day)
+        elif net_buy < 0 and existing_qty == 0:
+            # Sold more than bought today, but no existing lots (bought before start_date)
+            print(f"Warning: Sold {abs(net_buy)} shares of {stock_code} without matching lots (likely bought before start_date)")
 
     conn.commit()
+
+
+def _get_existing_lot_quantity(
+    conn: pymysql.connections.Connection,
+    stock_code: str,
+    crd_class: str,
+    loan_dt: str,
+    before_date: date,
+) -> int:
+    """Get total quantity of existing open lots before a given date."""
+    with conn.cursor() as cur:
+        if loan_dt == '99991231':
+            # Generic credit - match any credit lot
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(net_quantity), 0)
+                FROM daily_lots
+                WHERE stock_code = %s
+                  AND crd_class = %s
+                  AND is_closed = FALSE
+                  AND trade_date < %s
+                """,
+                (stock_code, crd_class, before_date),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(net_quantity), 0)
+                FROM daily_lots
+                WHERE stock_code = %s
+                  AND crd_class = %s
+                  AND (loan_dt = %s OR (loan_dt = '' AND %s = ''))
+                  AND is_closed = FALSE
+                  AND trade_date < %s
+                """,
+                (stock_code, crd_class, loan_dt if loan_dt else '', loan_dt if loan_dt else '', before_date),
+            )
+        return cur.fetchone()[0]
 
 
 def _insert_daily_lot(
@@ -169,7 +211,7 @@ def _insert_daily_lot(
                 stock_code,
                 stock_name,
                 crd_class,
-                loan_dt or None,
+                loan_dt if loan_dt else '',  # Use empty string instead of NULL for unique constraint
                 trade_date,
                 net_quantity,
                 float(avg_purchase_price),
@@ -221,18 +263,19 @@ def _reduce_lots_lifo(
             )
         else:
             # Normal case - match specific loan_dt
+            # Use empty string for NULL loan_dt to properly match
             cur.execute(
                 """
                 SELECT lot_id, net_quantity
                 FROM daily_lots
                 WHERE stock_code = %s
                   AND crd_class = %s
-                  AND (loan_dt = %s OR (loan_dt IS NULL AND %s = ''))
+                  AND loan_dt = %s
                   AND is_closed = FALSE
                   AND trade_date <= %s
                 ORDER BY trade_date DESC
                 """,
-                (stock_code, crd_class, loan_dt or None, loan_dt or '', sell_date),
+                (stock_code, crd_class, loan_dt if loan_dt else '', sell_date),
             )
 
         lots = cur.fetchall()

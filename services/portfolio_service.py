@@ -291,10 +291,11 @@ def _create_portfolio_snapshot_from_lots(
     - AND (is_closed = FALSE OR closed_date > X) (lot wasn't closed yet at that time)
     """
     # Get total portfolio value from daily_portfolio_snapshot (추정자산 = 청산 기준 총자산)
+    # Use day_stk_asst as fallback if prsm_dpst_aset_amt is not available
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         cur.execute(
             """
-            SELECT prsm_dpst_aset_amt
+            SELECT prsm_dpst_aset_amt, day_stk_asst
             FROM daily_portfolio_snapshot
             WHERE snapshot_date = %s
             """,
@@ -302,10 +303,15 @@ def _create_portfolio_snapshot_from_lots(
         )
         snapshot = cur.fetchone()
 
-    if not snapshot or not snapshot["prsm_dpst_aset_amt"]:
+    if not snapshot:
         return 0
 
-    total_portfolio_value = Decimal(str(snapshot["prsm_dpst_aset_amt"]))
+    # Use prsm_dpst_aset_amt if available, otherwise fall back to day_stk_asst
+    total_value = snapshot.get("prsm_dpst_aset_amt") or snapshot.get("day_stk_asst")
+    if not total_value:
+        return 0
+
+    total_portfolio_value = Decimal(str(total_value))
 
     # Get lots that were open on this date
     # A lot was open if: trade_date <= snapshot_date AND (is_closed=FALSE OR closed_date > snapshot_date)
