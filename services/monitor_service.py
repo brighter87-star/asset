@@ -13,8 +13,11 @@ from services.kiwoom_service import KiwoomTradingClient, get_stock_code, get_sto
 from services.order_service import OrderService
 from services.trade_logger import trade_logger
 
-# Watchlist file path
-WATCHLIST_FILE = Path(__file__).resolve().parent.parent / "watchlist.xlsx"
+# Watchlist file paths (CSV takes priority over xlsx)
+WATCHLIST_DIR = Path(__file__).resolve().parent.parent
+WATCHLIST_CSV = WATCHLIST_DIR / "watchlist.csv"
+WATCHLIST_XLSX = WATCHLIST_DIR / "watchlist.xlsx"
+SETTINGS_CSV = WATCHLIST_DIR / "settings.csv"
 
 # Korea timezone
 KST = ZoneInfo("Asia/Seoul")
@@ -60,10 +63,25 @@ class MonitorService:
         self._file_mtime: float = 0  # File modification time
         self._pre_market_reloaded: bool = False  # Track pre-market reload
 
+    def _get_watchlist_file(self) -> Optional[Path]:
+        """Get watchlist file path (CSV priority)."""
+        if WATCHLIST_CSV.exists():
+            return WATCHLIST_CSV
+        if WATCHLIST_XLSX.exists():
+            return WATCHLIST_XLSX
+        return None
+
     def _get_file_mtime(self) -> float:
         """Get file modification time."""
         try:
-            return os.path.getmtime(WATCHLIST_FILE)
+            watchlist_file = self._get_watchlist_file()
+            if watchlist_file:
+                mtime = os.path.getmtime(watchlist_file)
+                # Also check settings.csv
+                if SETTINGS_CSV.exists():
+                    mtime = max(mtime, os.path.getmtime(SETTINGS_CSV))
+                return mtime
+            return 0
         except Exception:
             return 0
 
@@ -76,17 +94,28 @@ class MonitorService:
 
     def load_settings(self) -> bool:
         """
-        Load settings from Excel 'settings' sheet.
+        Load settings from CSV or Excel 'settings' sheet.
 
         Expected columns:
         - key: Setting name (UNIT, TICK_BUFFER, STOP_LOSS_PCT)
         - value: Setting value
         """
-        if not WATCHLIST_FILE.exists():
-            return False
-
         try:
-            df = pd.read_excel(WATCHLIST_FILE, sheet_name="settings")
+            df = None
+
+            # CSV takes priority
+            if SETTINGS_CSV.exists():
+                df = pd.read_csv(SETTINGS_CSV)
+                print(f"[SETTINGS] Loading from {SETTINGS_CSV.name}")
+            elif WATCHLIST_XLSX.exists():
+                try:
+                    df = pd.read_excel(WATCHLIST_XLSX, sheet_name="settings")
+                except Exception:
+                    pass  # settings sheet may not exist
+
+            if df is None or df.empty:
+                return False
+
             df.columns = df.columns.str.lower().str.strip()
 
             for _, row in df.iterrows():
@@ -109,12 +138,13 @@ class MonitorService:
             return True
 
         except Exception as e:
-            print(f"[WARNING] Failed to load settings sheet: {e}")
+            print(f"[WARNING] Failed to load settings: {e}")
             return False
 
     def load_watchlist(self) -> List[dict]:
         """
-        Load watchlist from Excel 'watchlist' sheet.
+        Load watchlist from CSV or Excel 'watchlist' sheet.
+        CSV takes priority over xlsx.
 
         Expected columns (ticker 또는 name 중 하나는 필수):
         - ticker: (Optional) Stock code (e.g., 005930)
@@ -122,16 +152,21 @@ class MonitorService:
         - target_price: Target price for breakout
         - stop_loss_pct: (Optional) Custom stop loss %
         """
-        if not WATCHLIST_FILE.exists():
-            print(f"[WARNING] Watchlist not found: {WATCHLIST_FILE}")
+        watchlist_file = self._get_watchlist_file()
+        if not watchlist_file:
+            print(f"[WARNING] Watchlist not found (watchlist.csv or watchlist.xlsx)")
             return []
 
         try:
             # Load settings first
             self.load_settings()
 
-            # Load watchlist
-            df = pd.read_excel(WATCHLIST_FILE, sheet_name="watchlist")
+            # Load watchlist (CSV or xlsx)
+            if watchlist_file.suffix == '.csv':
+                df = pd.read_csv(watchlist_file)
+                print(f"[INFO] Loading watchlist from {watchlist_file.name}")
+            else:
+                df = pd.read_excel(watchlist_file, sheet_name="watchlist")
 
             # Normalize column names
             df.columns = df.columns.str.lower().str.strip()
