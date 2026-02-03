@@ -28,6 +28,16 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
+
+# Runtime files
+.positions.json
+
+# Claude settings
+.claude/
+
+# Office temp files
+~$*
 
 # Test/Sample data
 create_sample_data.py
