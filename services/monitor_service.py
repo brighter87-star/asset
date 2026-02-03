@@ -1,0 +1,573 @@
+"""
+Monitor service for price monitoring and trading strategy execution.
+"""
+
+import os
+import pandas as pd
+from datetime import datetime, time
+from pathlib import Path
+from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+from services.kiwoom_service import KiwoomTradingClient, get_stock_code, get_stock_name
+from services.order_service import OrderService
+from services.trade_logger import trade_logger
+
+# Watchlist file path
+WATCHLIST_FILE = Path(__file__).resolve().parent.parent / "watchlist.xlsx"
+
+# Korea timezone
+KST = ZoneInfo("Asia/Seoul")
+
+
+class TradingSettings:
+    """Trading settings loaded from Excel."""
+
+    # 1 unit = always 5% of assets (fixed)
+    UNIT_BASE_PERCENT: float = 5.0
+
+    def __init__(self):
+        self.UNIT: int = 1              # Total units (1, 2, 3...)
+        self.TICK_BUFFER: int = 3       # Target price + N ticks
+        self.STOP_LOSS_PCT: float = 7.0 # Stop loss %
+
+    def update(self, key: str, value):
+        """Update setting value."""
+        if hasattr(self, key):
+            expected_type = type(getattr(self, key))
+            setattr(self, key, expected_type(value))
+
+    def get_unit_percent(self) -> float:
+        """Get total percentage for position (UNIT * 5%)."""
+        return self.UNIT * self.UNIT_BASE_PERCENT
+
+    def get_half_unit_percent(self) -> float:
+        """Get half unit percentage for each buy (UNIT/2 * 5%)."""
+        return (self.UNIT / 2) * self.UNIT_BASE_PERCENT
+
+
+class MonitorService:
+    """
+    Monitors prices and executes trading strategy.
+    """
+
+    def __init__(self):
+        self.trading_settings = TradingSettings()
+        self.client = KiwoomTradingClient()
+        self.order_service = OrderService(settings=self.trading_settings)
+        self.watchlist: List[dict] = []
+        self.daily_triggers: Dict[str, dict] = {}  # Track triggered entries today
+        self._file_mtime: float = 0  # File modification time
+        self._pre_market_reloaded: bool = False  # Track pre-market reload
+
+    def _get_file_mtime(self) -> float:
+        """Get file modification time."""
+        try:
+            return os.path.getmtime(WATCHLIST_FILE)
+        except Exception:
+            return 0
+
+    def _check_file_changed(self) -> bool:
+        """Check if file has been modified since last load."""
+        current_mtime = self._get_file_mtime()
+        if current_mtime > self._file_mtime:
+            return True
+        return False
+
+    def load_settings(self) -> bool:
+        """
+        Load settings from Excel 'settings' sheet.
+
+        Expected columns:
+        - key: Setting name (UNIT, TICK_BUFFER, STOP_LOSS_PCT)
+        - value: Setting value
+        """
+        if not WATCHLIST_FILE.exists():
+            return False
+
+        try:
+            df = pd.read_excel(WATCHLIST_FILE, sheet_name="settings")
+            df.columns = df.columns.str.lower().str.strip()
+
+            for _, row in df.iterrows():
+                key = str(row.get("key", "")).strip().upper()
+                value = row.get("value")
+
+                if key and not pd.isna(value):
+                    self.trading_settings.update(key, value)
+
+            print(f"[SETTINGS] UNIT={self.trading_settings.UNIT} "
+                  f"({self.trading_settings.get_unit_percent()}%), "
+                  f"TICK={self.trading_settings.TICK_BUFFER}, "
+                  f"SL={self.trading_settings.STOP_LOSS_PCT}%")
+
+            trade_logger.log_settings_change({
+                "UNIT": self.trading_settings.UNIT,
+                "TICK_BUFFER": self.trading_settings.TICK_BUFFER,
+                "STOP_LOSS_PCT": self.trading_settings.STOP_LOSS_PCT,
+            })
+            return True
+
+        except Exception as e:
+            print(f"[WARNING] Failed to load settings sheet: {e}")
+            return False
+
+    def load_watchlist(self) -> List[dict]:
+        """
+        Load watchlist from Excel 'watchlist' sheet.
+
+        Expected columns (ticker 또는 name 중 하나는 필수):
+        - ticker: (Optional) Stock code (e.g., 005930)
+        - name: (Optional) Stock name (종목명) - ticker 대신 사용 가능
+        - target_price: Target price for breakout
+        - stop_loss_pct: (Optional) Custom stop loss %
+        """
+        if not WATCHLIST_FILE.exists():
+            print(f"[WARNING] Watchlist not found: {WATCHLIST_FILE}")
+            return []
+
+        try:
+            # Load settings first
+            self.load_settings()
+
+            # Load watchlist
+            df = pd.read_excel(WATCHLIST_FILE, sheet_name="watchlist")
+
+            # Normalize column names
+            df.columns = df.columns.str.lower().str.strip()
+
+            watchlist = []
+            for _, row in df.iterrows():
+                # ticker와 name 둘 다 확인
+                ticker = ""
+                name = ""
+
+                if "ticker" in row and not pd.isna(row["ticker"]):
+                    ticker = str(row["ticker"]).strip()
+                    # Ensure 6-digit format
+                    if ticker and len(ticker) < 6:
+                        ticker = ticker.zfill(6)
+
+                if "name" in row and not pd.isna(row["name"]):
+                    name = str(row["name"]).strip()
+
+                target_price = row.get("target_price")
+
+                if pd.isna(target_price):
+                    continue
+
+                # ticker가 없으면 name으로 조회
+                if not ticker and name:
+                    ticker = get_stock_code(name)
+                    if not ticker:
+                        print(f"[WARNING] Cannot find ticker for '{name}', skipping")
+                        continue
+
+                # name이 없으면 ticker로 조회
+                if ticker and not name:
+                    name = get_stock_name(ticker)
+
+                if not ticker:
+                    print(f"[WARNING] No ticker or name provided, skipping row")
+                    continue
+
+                item = {
+                    "ticker": ticker,
+                    "target_price": int(target_price),
+                    "stop_loss_pct": None,
+                    "name": name,
+                }
+
+                # Optional custom stop loss
+                if "stop_loss_pct" in row and not pd.isna(row["stop_loss_pct"]):
+                    item["stop_loss_pct"] = float(row["stop_loss_pct"])
+
+                watchlist.append(item)
+
+            self.watchlist = watchlist
+            self._file_mtime = self._get_file_mtime()
+            print(f"[INFO] Loaded {len(watchlist)} items from watchlist")
+            return watchlist
+
+        except Exception as e:
+            print(f"[ERROR] Failed to load watchlist: {e}")
+            return []
+
+    def reload_if_changed(self) -> bool:
+        """Reload watchlist if file has changed."""
+        if self._check_file_changed():
+            print(f"[INFO] File changed, reloading...")
+            self.load_watchlist()
+            return True
+        return False
+
+    def get_current_time_kst(self) -> datetime:
+        """Get current time in Korea."""
+        return datetime.now(KST)
+
+    def is_market_open(self) -> bool:
+        """Check if KRX market is open (9:00 AM - 3:30 PM KST)."""
+        now_kst = self.get_current_time_kst()
+        market_open = time(9, 0)
+        market_close = time(15, 30)
+
+        # Check weekday (Mon=0, Sun=6)
+        if now_kst.weekday() >= 5:
+            return False
+
+        current_time = now_kst.time()
+        return market_open <= current_time < market_close
+
+    def is_near_market_close(self, minutes: int = 5) -> bool:
+        """Check if we're within N minutes of market close."""
+        now_kst = self.get_current_time_kst()
+        market_close = time(15, 30)
+
+        if now_kst.weekday() >= 5:
+            return False
+
+        current_time = now_kst.time()
+
+        # Calculate minutes until close
+        close_minutes = market_close.hour * 60 + market_close.minute
+        current_minutes = current_time.hour * 60 + current_time.minute
+
+        minutes_until_close = close_minutes - current_minutes
+
+        return 0 < minutes_until_close <= minutes
+
+    def is_market_open_time(self) -> bool:
+        """Check if it's exactly market open time (within first minute)."""
+        now_kst = self.get_current_time_kst()
+        current_time = now_kst.time()
+
+        market_open_start = time(9, 0)
+        market_open_end = time(9, 1)
+
+        return market_open_start <= current_time < market_open_end
+
+    def is_pre_market_time(self) -> bool:
+        """Check if it's 5 minutes before market open (8:55 AM KST)."""
+        now_kst = self.get_current_time_kst()
+
+        if now_kst.weekday() >= 5:
+            return False
+
+        current_time = now_kst.time()
+        pre_market_start = time(8, 55)
+        pre_market_end = time(8, 56)
+
+        return pre_market_start <= current_time < pre_market_end
+
+    def check_pre_market_reload(self) -> bool:
+        """
+        Check and perform pre-market reload (5 min before open).
+        Returns True if reload was performed.
+        """
+        if not self.is_pre_market_time():
+            self._pre_market_reloaded = False
+            return False
+
+        if self._pre_market_reloaded:
+            return False
+
+        print(f"[PRE-MARKET] Reloading settings and watchlist...")
+        self.load_watchlist()
+        self._pre_market_reloaded = True
+        return True
+
+    def get_price(self, symbol: str) -> Optional[dict]:
+        """Get current price for symbol."""
+        try:
+            return self.client.get_stock_price(symbol)
+        except Exception as e:
+            print(f"[{symbol}] Failed to get price: {e}")
+            return None
+
+    def check_breakout_entry(self, item: dict) -> bool:
+        """
+        Check if breakout entry condition is met.
+
+        Returns True if:
+        - Current price >= target price
+        - Not already triggered today
+        - Not already have position
+        """
+        symbol = item["ticker"]
+        target_price = item["target_price"]
+
+        # Already triggered today?
+        if symbol in self.daily_triggers:
+            return False
+
+        # Already have position?
+        if self.order_service.has_position(symbol):
+            return False
+
+        # Get current price
+        price_data = self.get_price(symbol)
+        if not price_data:
+            return False
+
+        current_price = price_data["last"]
+
+        # Check breakout: 현재가 >= 기준가
+        if current_price >= target_price:
+            print(f"[{symbol}] BREAKOUT: {current_price:,}원 >= {target_price:,}원")
+            return True
+
+        return False
+
+    def check_gap_up_entry(self, item: dict) -> bool:
+        """
+        Check if gap-up entry condition is met at market open.
+
+        Returns True if:
+        - It's market open time
+        - Open price > target price
+        - Not already triggered today
+        - Not already have position
+        """
+        symbol = item["ticker"]
+        target_price = item["target_price"]
+
+        if symbol in self.daily_triggers:
+            return False
+
+        if self.order_service.has_position(symbol):
+            return False
+
+        price_data = self.get_price(symbol)
+        if not price_data:
+            return False
+
+        open_price = price_data["open"]
+        tick_size = self.client.get_tick_size(target_price)
+        trigger_price = target_price + (tick_size * self.trading_settings.TICK_BUFFER)
+
+        if open_price >= trigger_price:
+            print(f"[{symbol}] GAP UP: Open {open_price:,}원 >= {trigger_price:,}원")
+            return True
+
+        return False
+
+    def execute_entry(self, item: dict, is_gap_up: bool = False) -> bool:
+        """Execute entry order."""
+        symbol = item["ticker"]
+        target_price = item["target_price"]
+        stop_loss_pct = item.get("stop_loss_pct")
+
+        # 주문 시도 전에 먼저 daily_triggers에 등록 (중복 주문 방지)
+        self.daily_triggers[symbol] = {
+            "entry_type": "gap_up" if is_gap_up else "breakout",
+            "entry_time": datetime.now().isoformat(),
+            "status": "pending",
+        }
+
+        price_data = self.get_price(symbol)
+        if not price_data:
+            self.daily_triggers[symbol]["status"] = "price_failed"
+            return False
+
+        # Use current price for gap up, target price for breakout
+        if is_gap_up:
+            entry_price = price_data["last"]
+        else:
+            entry_price = target_price
+
+        result = self.order_service.execute_buy(
+            symbol=symbol,
+            target_price=entry_price,
+            is_initial=True,
+            stop_loss_pct=stop_loss_pct,
+        )
+
+        if result:
+            self.daily_triggers[symbol].update({
+                "status": "success",
+                "entry_price": entry_price,
+            })
+            return True
+        else:
+            self.daily_triggers[symbol]["status"] = "order_failed"
+            return False
+
+    def check_and_execute_stop_loss(self) -> List[str]:
+        """
+        Check stop loss for all open positions.
+
+        Returns list of symbols that were stopped out.
+        """
+        stopped = []
+
+        for pos in self.order_service.get_open_positions():
+            symbol = pos["symbol"]
+
+            price_data = self.get_price(symbol)
+            if not price_data:
+                continue
+
+            current_price = price_data["last"]
+
+            if self.order_service.check_stop_loss(symbol, current_price):
+                # 손절 시 현재가 - 3틱으로 주문 (체결 확보)
+                tick_size = self.client.get_tick_size(current_price)
+                sell_price = current_price - (tick_size * 3)
+                print(f"[{symbol}] STOP LOSS: 현재가 {current_price:,}원 → 주문가 {sell_price:,}원 (-3틱)")
+
+                result = self.order_service.execute_sell(
+                    symbol=symbol,
+                    price=sell_price,
+                    reason="stop_loss",
+                )
+                if result:
+                    stopped.append(symbol)
+
+        return stopped
+
+    def execute_close_logic(self) -> Dict[str, str]:
+        """
+        Execute end-of-day logic for TODAY's entries only.
+
+        Logic (only for stocks entered today via daily_triggers):
+        - If close > entry: Add 0.5 unit (pyramid)
+        - If close < entry: Sell all (cut loss)
+
+        Pre-existing positions (not in daily_triggers) are NOT affected.
+
+        Returns dict of {symbol: action_taken}
+        """
+        actions = {}
+
+        # Only process stocks that were entered TODAY
+        if not self.daily_triggers:
+            print("[CLOSE] No daily triggers - skipping close logic")
+            return actions
+
+        for pos in self.order_service.get_open_positions():
+            symbol = pos["symbol"]
+
+            # Skip if not entered today
+            if symbol not in self.daily_triggers:
+                continue
+
+            entry_price = pos.get("entry_price", 0)
+
+            price_data = self.get_price(symbol)
+            if not price_data:
+                continue
+
+            current_price = price_data["last"]
+
+            if current_price > entry_price:
+                # Profitable - pyramid
+                print(f"[{symbol}] Close {current_price:,}원 > Entry {entry_price:,}원 - PYRAMID")
+
+                # Find watchlist item for stop_loss_pct
+                watchlist_item = next(
+                    (w for w in self.watchlist if w["ticker"] == symbol),
+                    None
+                )
+                stop_loss_pct = watchlist_item.get("stop_loss_pct") if watchlist_item else None
+
+                result = self.order_service.execute_buy(
+                    symbol=symbol,
+                    target_price=current_price,
+                    is_initial=False,
+                    stop_loss_pct=stop_loss_pct,
+                )
+
+                if result:
+                    actions[symbol] = "pyramid"
+                else:
+                    actions[symbol] = "pyramid_failed"
+
+            else:
+                # Loss - sell all
+                tick_size = self.client.get_tick_size(current_price)
+                sell_price = current_price - (tick_size * 3)
+                print(f"[{symbol}] Close {current_price:,}원 <= Entry {entry_price:,}원 - SELL @ {sell_price:,}원")
+
+                result = self.order_service.execute_sell(
+                    symbol=symbol,
+                    price=sell_price,
+                    reason="close_below_entry",
+                )
+
+                if result:
+                    actions[symbol] = "sold"
+                else:
+                    actions[symbol] = "sell_failed"
+
+        return actions
+
+    def reset_daily_triggers(self):
+        """Reset daily triggers (call at start of new trading day)."""
+        self.daily_triggers = {}
+        print("[INFO] Daily triggers reset")
+
+    def run_monitoring_cycle(self) -> dict:
+        """
+        Run one monitoring cycle.
+
+        Returns dict with actions taken.
+        """
+        result = {
+            "timestamp": datetime.now().isoformat(),
+            "market_open": self.is_market_open(),
+            "entries": [],
+            "stop_losses": [],
+            "close_actions": {},
+            "reloaded": False,
+        }
+
+        # Check for file changes
+        if self.reload_if_changed():
+            result["reloaded"] = True
+
+        # Pre-market reload (5 min before open)
+        if self.check_pre_market_reload():
+            result["reloaded"] = True
+
+        if not self.is_market_open():
+            return result
+
+        # Check market open gap-up entries
+        if self.is_market_open_time():
+            for item in self.watchlist:
+                if self.check_gap_up_entry(item):
+                    if self.execute_entry(item, is_gap_up=True):
+                        result["entries"].append({
+                            "symbol": item["ticker"],
+                            "type": "gap_up",
+                        })
+
+        # Check breakout entries
+        for item in self.watchlist:
+            if self.check_breakout_entry(item):
+                if self.execute_entry(item, is_gap_up=False):
+                    result["entries"].append({
+                        "symbol": item["ticker"],
+                        "type": "breakout",
+                    })
+
+        # Check stop losses
+        stopped = self.check_and_execute_stop_loss()
+        result["stop_losses"] = stopped
+
+        # Execute close logic near market close
+        if self.is_near_market_close(5):
+            result["close_actions"] = self.execute_close_logic()
+
+        return result
+
+    def get_status(self) -> dict:
+        """Get current monitoring status."""
+        return {
+            "current_time_kst": self.get_current_time_kst().isoformat(),
+            "market_open": self.is_market_open(),
+            "near_close": self.is_near_market_close(5),
+            "watchlist_count": len(self.watchlist),
+            "open_positions": len(self.order_service.get_open_positions()),
+            "daily_triggers": len(self.daily_triggers),
+        }

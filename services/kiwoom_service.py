@@ -1226,3 +1226,741 @@ def backfill_market_index(
     print("=" * 80)
     print(f"Backfill complete: {result} records")
     return result
+
+
+# ============================================================================
+# Auto Trading APIs (자동매매용 API)
+# ============================================================================
+
+class KiwoomTradingClient(KiwoomAPIClient):
+    """
+    Extended Kiwoom API client with trading capabilities.
+    Inherits from KiwoomAPIClient and adds order/price APIs.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._last_request_time = 0
+        self._rate_limit_interval = 0.5  # 0.5초 간격
+
+    def _wait_for_rate_limit(self):
+        """Wait to respect API rate limits."""
+        import time
+        elapsed = time.time() - self._last_request_time
+        if elapsed < self._rate_limit_interval:
+            time.sleep(self._rate_limit_interval - elapsed)
+        self._last_request_time = time.time()
+
+    def get_current_price(self, stock_code: str) -> Dict[str, Any]:
+        """
+        보유종목 현재가 조회 (kt00004 holdings에서 추출)
+        주의: 보유하지 않은 종목은 조회 불가. WebSocket 사용 권장.
+
+        Args:
+            stock_code: 종목코드 (6자리)
+
+        Returns:
+            dict: 현재가 정보 (보유종목만)
+        """
+        # 보유종목에서 현재가 추출
+        holdings = self.get_holdings()
+        holdings_list = holdings.get("stk_acnt_evlt_prst", [])
+
+        for item in holdings_list:
+            if item.get("stk_cd") == stock_code:
+                return {
+                    "stock_code": stock_code,
+                    "last": int(item.get("cur_prc", 0) or 0),
+                    "avg_price": int(item.get("avg_prc", 0) or 0),
+                    "quantity": int(item.get("rmnd_qty", 0) or 0),
+                    "eval_amt": int(item.get("evlt_amt", 0) or 0),
+                    "pl_amt": int(item.get("pl_amt", 0) or 0),
+                    "pl_pct": float(item.get("pl_rt", 0) or 0),
+                }
+
+        raise Exception(f"Stock {stock_code} not found in holdings. Use WebSocket for non-held stocks.")
+
+    def get_buying_power(self) -> Dict[str, Any]:
+        """
+        매수가능금액 조회 (kt00008 또는 kt00004에서 추출)
+
+        Returns:
+            dict: 매수가능금액 정보
+        """
+        token = self.get_access_token()
+
+        # kt00004 (계좌잔고)에서 예수금 정보 추출
+        url = f"{self.base_url}/api/dostk/acnt"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'kt00004',
+        }
+
+        body = {
+            "qry_tp": "1",
+            "dmst_stex_tp": "KRX",
+        }
+
+        self._wait_for_rate_limit()
+
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("return_code") != 0:
+                raise Exception(f"API error: {result.get('return_msg', 'Unknown error')}")
+
+            # 예수금 관련 필드
+            d2_entra = int(result.get("d2_entra", 0) or 0)  # D+2 예수금
+            entr = int(result.get("entr", 0) or 0)  # 예수금
+
+            return {
+                "available_amt": d2_entra,  # 매수가능금액 (D+2 예수금)
+                "deposit": entr,  # 예수금
+                "currency": "KRW",
+            }
+
+        except Exception as e:
+            print(f"Failed to get buying power: {e}")
+            raise
+
+    def buy_order(
+        self,
+        stock_code: str,
+        quantity: int,
+        price: int,
+        order_type: str = "0",
+        use_credit: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        매수 주문 (신용 또는 현금)
+
+        Args:
+            stock_code: 종목코드 (6자리)
+            quantity: 주문수량
+            price: 주문가격 (지정가)
+            order_type: 매매구분 (0: 보통, 3: 시장가, 5: 조건부지정가 등)
+            use_credit: True=신용주문, False=현금주문
+
+        Returns:
+            dict: 주문 결과 (주문번호 등)
+        """
+        token = self.get_access_token()
+
+        # 신용주문: /api/dostk/crdordr, 현금주문: /api/dostk/ordr
+        if use_credit:
+            url = f"{self.base_url}/api/dostk/crdordr"
+        else:
+            url = f"{self.base_url}/api/dostk/ordr"
+
+        # 둘 다 같은 Body 형식 사용
+        body = {
+            "dmst_stex_tp": "KRX",  # 국내거래소 (KRX/NXT/SOR)
+            "stk_cd": stock_code,
+            "ord_qty": str(quantity),
+            "ord_uv": str(price),
+            "trde_tp": order_type,  # 0:보통, 3:시장가, 5:조건부지정가 등
+        }
+
+        # API ID: kt10000=현금매수, kt10006=신용매수
+        api_id = 'kt10006' if use_credit else 'kt10000'
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': api_id,
+        }
+
+        self._wait_for_rate_limit()
+
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("return_code") != 0:
+                error_msg = result.get('return_msg', 'Unknown error')
+                if self._is_credit_limit_error(error_msg):
+                    raise CreditLimitError(error_msg)
+                raise Exception(f"Order error: {error_msg}")
+
+            return {
+                "order_no": result.get("ord_no", ""),
+                "order_time": result.get("ord_tm", ""),
+                "message": result.get("return_msg", ""),
+                "exchange": result.get("dmst_stex_tp", ""),
+                "order_type": "CREDIT" if use_credit else "CASH",
+            }
+
+        except CreditLimitError:
+            raise
+        except Exception as e:
+            print(f"[{stock_code}] Buy order failed: {e}")
+            raise
+
+    @staticmethod
+    def _is_credit_limit_error(error_msg: str) -> bool:
+        """신용한도 초과 오류인지 확인."""
+        credit_limit_keywords = [
+            "신용한도",
+            "용자한도",
+            "한도초과",
+            "한도 초과",
+        ]
+        return any(keyword in error_msg for keyword in credit_limit_keywords)
+
+    def sell_order(
+        self,
+        stock_code: str,
+        quantity: int,
+        price: int,
+        order_type: str = "00",
+    ) -> Dict[str, Any]:
+        """
+        현금 매도 주문 (kt10001 - 주식매도주문)
+
+        Args:
+            stock_code: 종목코드 (6자리)
+            quantity: 주문수량
+            price: 주문가격 (지정가)
+            order_type: 주문유형 (00: 지정가, 03: 시장가)
+
+        Returns:
+            dict: 주문 결과
+        """
+        token = self.get_access_token()
+
+        url = f"{self.base_url}/api/dostk/ordr"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'kt10001',
+        }
+
+        body = {
+            "stk_cd": stock_code,
+            "buy_sell_tp": "2",  # 2: 매도
+            "ord_tp": order_type,  # 00: 지정가, 03: 시장가
+            "ord_qty": str(quantity),
+            "ord_prc": str(price),
+        }
+
+        self._wait_for_rate_limit()
+
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("return_code") != 0:
+                raise Exception(f"Order error: {result.get('return_msg', 'Unknown error')}")
+
+            return {
+                "order_no": result.get("ord_no", ""),
+                "order_time": result.get("ord_tm", ""),
+                "message": result.get("return_msg", ""),
+            }
+
+        except Exception as e:
+            print(f"[{stock_code}] Sell order failed: {e}")
+            raise
+
+    def sell_credit_order(
+        self,
+        stock_code: str,
+        quantity: int,
+        price: int,
+        loan_dt: str = "",
+        order_type: str = "00",
+    ) -> Dict[str, Any]:
+        """
+        신용 매도 주문 (kt10007 - 신용매도주문)
+
+        Args:
+            stock_code: 종목코드 (6자리)
+            quantity: 주문수량
+            price: 주문가격 (지정가)
+            loan_dt: 대출일자 (YYYYMMDD, 빈값이면 자동)
+            order_type: 주문유형 (00: 지정가, 03: 시장가)
+
+        Returns:
+            dict: 주문 결과
+        """
+        token = self.get_access_token()
+
+        url = f"{self.base_url}/api/dostk/crdordr"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'kt10007',
+        }
+
+        body = {
+            "stk_cd": stock_code,
+            "buy_sell_tp": "2",  # 2: 매도
+            "ord_tp": order_type,  # 00: 지정가, 03: 시장가
+            "ord_qty": str(quantity),
+            "ord_prc": str(price),
+            "loan_dt": loan_dt,  # 대출일자 (빈값이면 자동)
+        }
+
+        self._wait_for_rate_limit()
+
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("return_code") != 0:
+                raise Exception(f"Credit sell error: {result.get('return_msg', 'Unknown error')}")
+
+            return {
+                "order_no": result.get("ord_no", ""),
+                "order_time": result.get("ord_tm", ""),
+                "message": result.get("return_msg", ""),
+            }
+
+        except Exception as e:
+            print(f"[{stock_code}] Credit sell order failed: {e}")
+            raise
+
+    def get_pending_orders(self) -> List[Dict[str, Any]]:
+        """
+        미체결 주문 조회 (kt00005 - 미체결조회)
+
+        Returns:
+            list: 미체결 주문 리스트
+        """
+        token = self.get_access_token()
+
+        url = f"{self.base_url}/api/dostk/acnt"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'kt00005',
+        }
+
+        body = {
+            "qry_tp": "0",  # 전체
+        }
+
+        self._wait_for_rate_limit()
+
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("return_code") != 0:
+                raise Exception(f"API error: {result.get('return_msg', 'Unknown error')}")
+
+            return result.get("ncls_ord_list", [])
+
+        except Exception as e:
+            print(f"Failed to get pending orders: {e}")
+            raise
+
+    def get_net_assets(self) -> Dict[str, Any]:
+        """
+        순자산 및 주식자산 조회 (레버리지 계산용)
+
+        Returns:
+            dict: 순자산, 주식평가금액, 레버리지 비율
+        """
+        token = self.get_access_token()
+
+        url = f"{self.base_url}/api/dostk/acnt"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': 'kt00004',
+        }
+
+        body = {
+            "qry_tp": "1",
+            "dmst_stex_tp": "KRX",
+        }
+
+        self._wait_for_rate_limit()
+
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("return_code") != 0:
+                raise Exception(f"API error: {result.get('return_msg', 'Unknown error')}")
+
+            # prsm_dpst_aset_amt: 추정예탁자산 (순자산)
+            # tot_est_amt: 유가잔고평가액 (주식평가금액)
+            net_assets = int(result.get("prsm_dpst_aset_amt", 0) or 0)
+            stock_assets = int(result.get("tot_est_amt", 0) or 0)
+
+            # 주식 비중 계산 (주식자산 / 순자산 * 100)
+            leverage_pct = (stock_assets / net_assets * 100) if net_assets > 0 else 0
+
+            return {
+                "net_assets": net_assets,  # 순자산 (추정예탁자산)
+                "stock_assets": stock_assets,  # 주식평가금액 (유가잔고평가액)
+                "leverage_pct": leverage_pct,  # 현재 주식 비중 (%)
+            }
+
+        except Exception as e:
+            print(f"Failed to get net assets: {e}")
+            raise
+
+    @staticmethod
+    def get_tick_size(price: int) -> int:
+        """
+        국내주식 호가단위 계산
+
+        Args:
+            price: 현재가
+
+        Returns:
+            호가단위
+        """
+        if price < 2000:
+            return 1
+        elif price < 5000:
+            return 5
+        elif price < 20000:
+            return 10
+        elif price < 50000:
+            return 50
+        elif price < 200000:
+            return 100
+        elif price < 500000:
+            return 500
+        else:
+            return 1000
+
+    def get_stock_price(self, stock_code: str) -> Dict[str, Any]:
+        """
+        개별 종목 현재가 조회 (REST API)
+
+        Args:
+            stock_code: 종목코드 (6자리)
+
+        Returns:
+            dict: {
+                "stock_code": "005930",
+                "name": "삼성전자",
+                "last": 164300,        # 현재가
+                "open": 157900,        # 시가
+                "high": 165100,        # 고가
+                "low": 157200,         # 저가
+                "volume": 25211212,    # 거래량
+                "change": 13900,       # 전일대비
+                "change_pct": 9.24,    # 등락률
+            }
+        """
+        token = self.get_access_token()
+
+        url = f"{self.base_url}/api/dostk/stkinfo"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json; charset=UTF-8',
+            'api-id': 'ka10001',  # 개별종목 시세
+        }
+
+        body = {
+            "stk_cd": stock_code,
+        }
+
+        try:
+            self._wait_for_rate_limit()
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("return_code") not in (0, None):
+                raise Exception(f"API error: {result.get('return_msg', 'Unknown')}")
+
+            def parse_price(val):
+                """가격 문자열 파싱 (+/-부호 제거)"""
+                if not val:
+                    return 0
+                val_str = str(val).replace("+", "").replace("-", "")
+                try:
+                    return int(val_str)
+                except ValueError:
+                    return 0
+
+            def parse_float(val):
+                """실수 문자열 파싱"""
+                if not val:
+                    return 0.0
+                val_str = str(val).replace("+", "").replace("-", "")
+                try:
+                    return float(val_str)
+                except ValueError:
+                    return 0.0
+
+            # 부호 판단 (2: 상승, 5: 하락)
+            pre_sig = result.get("pre_sig", "")
+            change = parse_price(result.get("pred_pre", "0"))
+            if pre_sig == "5":
+                change = -change
+
+            return {
+                "stock_code": stock_code,
+                "name": result.get("stk_nm", ""),
+                "last": parse_price(result.get("cur_prc")),
+                "open": parse_price(result.get("open_pric")),
+                "high": parse_price(result.get("high_pric")),
+                "low": parse_price(result.get("low_pric")),
+                "volume": parse_price(result.get("trde_qty")),
+                "change": change,
+                "change_pct": parse_float(result.get("flu_rt")),
+            }
+
+        except Exception as e:
+            print(f"[ERROR] Failed to get stock price for {stock_code}: {e}")
+            return {
+                "stock_code": stock_code,
+                "name": "",
+                "last": 0,
+                "open": 0,
+                "high": 0,
+                "low": 0,
+                "volume": 0,
+                "change": 0,
+                "change_pct": 0.0,
+            }
+
+    def get_stock_list(self, market_type: str = "0") -> List[Dict[str, Any]]:
+        """
+        종목정보 리스트 조회 (종목코드 → 종목명 매핑용)
+
+        Args:
+            market_type: 시장구분 (0: 코스피, 10: 코스닥)
+
+        Returns:
+            list: 종목 리스트 [{"code": "005930", "name": "삼성전자", ...}, ...]
+        """
+        token = self.get_access_token()
+
+        url = f"{self.base_url}/api/dostk/stkinfo"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json; charset=UTF-8',
+            'api-id': 'ka10099',  # 종목정보 리스트 API
+        }
+
+        body = {
+            "mrkt_tp": market_type,
+        }
+
+        all_stocks = []
+        cont_yn = "N"
+        next_key = ""
+
+        try:
+            while True:
+                if cont_yn == "Y":
+                    headers["cont-yn"] = "Y"
+                    headers["next-key"] = next_key
+
+                self._wait_for_rate_limit()
+                response = requests.post(url, headers=headers, json=body, timeout=30)
+                response.raise_for_status()
+                result = response.json()
+
+                if result.get("return_code") != 0:
+                    raise Exception(f"API error: {result.get('return_msg', 'Unknown error')}")
+
+                stocks = result.get("list", [])
+                all_stocks.extend(stocks)
+
+                cont_yn = response.headers.get("cont-yn", "N")
+                next_key = response.headers.get("next-key", "")
+
+                if cont_yn != "Y":
+                    break
+
+            return all_stocks
+
+        except Exception as e:
+            print(f"Failed to get stock list: {e}")
+            return []  # 실패시 빈 리스트 반환 (정적 매핑으로 폴백)
+
+
+# 종목명 캐시 (싱글톤)
+_stock_name_cache: Dict[str, str] = {}  # code → name
+_stock_code_cache: Dict[str, str] = {}  # name → code (역방향)
+_stock_cache_loaded = False
+
+# 자주 사용하는 종목 정적 매핑 (API 의존성 없이 안정적)
+_COMMON_STOCKS = {
+    # KOSPI 대형주
+    "005930": "삼성전자",
+    "000660": "SK하이닉스",
+    "005935": "삼성전자우",
+    "005380": "현대차",
+    "000270": "기아",
+    "005490": "POSCO홀딩스",
+    "035420": "NAVER",
+    "035720": "카카오",
+    "051910": "LG화학",
+    "006400": "삼성SDI",
+    "003670": "포스코퓨처엠",
+    "207940": "삼성바이오로직스",
+    "005387": "현대차2우B",
+    "005389": "현대차3우B",
+    "068270": "셀트리온",
+    "028260": "삼성물산",
+    "012330": "현대모비스",
+    "066570": "LG전자",
+    "055550": "신한지주",
+    "105560": "KB금융",
+    "086790": "하나금융지주",
+    "316140": "우리금융지주",
+    "003550": "LG",
+    "017670": "SK텔레콤",
+    "034730": "SK",
+    "096770": "SK이노베이션",
+    "032830": "삼성생명",
+    "030200": "KT",
+    "010130": "고려아연",
+    "009150": "삼성전기",
+    "011200": "HMM",
+    "010950": "S-Oil",
+    "018260": "삼성에스디에스",
+    "033780": "KT&G",
+    "373220": "LG에너지솔루션",
+    "000810": "삼성화재",
+    "009540": "HD한국조선해양",
+    "329180": "HD현대중공업",
+    "042700": "한미반도체",
+    # KOSDAQ 대형주
+    "247540": "에코프로비엠",
+    "086520": "에코프로",
+    "041510": "에스엠",
+    "263750": "펄어비스",
+    "293490": "카카오게임즈",
+    "112040": "위메이드",
+    "196170": "알테오젠",
+    "357780": "솔브레인",
+    "039030": "이오테크닉스",
+    "403870": "HPSP",
+    "067310": "하나마이크론",
+    "095340": "ISC",
+    "060310": "3S",
+    "058470": "리노공업",
+    "352820": "하이브",
+    "145020": "휴젤",
+    "064350": "현대로템",
+}
+
+
+def get_stock_name(stock_code: str) -> str:
+    """
+    종목코드로 종목명 조회 (캐시 사용)
+
+    Args:
+        stock_code: 종목코드 (6자리)
+
+    Returns:
+        종목명 (없으면 빈 문자열)
+    """
+    global _stock_cache_loaded
+
+    if not _stock_cache_loaded:
+        load_stock_cache()
+
+    return _stock_name_cache.get(stock_code, "")
+
+
+def get_stock_code(stock_name: str) -> str:
+    """
+    종목명으로 종목코드 조회 (캐시 사용)
+
+    Args:
+        stock_name: 종목명 (예: "삼성전자", "SK하이닉스")
+
+    Returns:
+        종목코드 (없으면 빈 문자열)
+    """
+    global _stock_cache_loaded
+
+    if not _stock_cache_loaded:
+        load_stock_cache()
+
+    # 공백 제거 및 정규화
+    normalized_name = stock_name.strip().replace(" ", "")
+
+    # 정확히 일치하는 경우
+    if normalized_name in _stock_code_cache:
+        return _stock_code_cache[normalized_name]
+
+    # 부분 일치 (입력값이 실제 종목명에 포함된 경우)
+    for name, code in _stock_code_cache.items():
+        name_normalized = name.replace(" ", "")
+        if normalized_name in name_normalized or name_normalized in normalized_name:
+            return code
+
+    return ""
+
+
+def load_stock_cache():
+    """종목명 캐시 로드 (API → 정적 매핑 폴백)."""
+    global _stock_name_cache, _stock_code_cache, _stock_cache_loaded
+
+    print("[INFO] Loading stock cache...")
+
+    try:
+        client = KiwoomTradingClient()
+
+        # 1. API에서 코스피 종목 로드
+        print("[INFO] Fetching KOSPI stocks...")
+        kospi_stocks = client.get_stock_list("0")
+        for stock in kospi_stocks:
+            code = stock.get("code", "")
+            name = stock.get("name", "")
+            if code and name:
+                _stock_name_cache[code] = name
+                _stock_code_cache[name] = code
+                _stock_code_cache[name.replace(" ", "")] = code
+
+        print(f"[INFO] Loaded {len(kospi_stocks)} KOSPI stocks")
+
+        # 2. API에서 코스닥 종목 로드
+        print("[INFO] Fetching KOSDAQ stocks...")
+        kosdaq_stocks = client.get_stock_list("10")
+        for stock in kosdaq_stocks:
+            code = stock.get("code", "")
+            name = stock.get("name", "")
+            if code and name:
+                _stock_name_cache[code] = name
+                _stock_code_cache[name] = code
+                _stock_code_cache[name.replace(" ", "")] = code
+
+        print(f"[INFO] Loaded {len(kosdaq_stocks)} KOSDAQ stocks")
+
+    except Exception as e:
+        print(f"[WARNING] Failed to load from API: {e}")
+        print("[INFO] Using static mapping as fallback...")
+
+        # 정적 매핑 폴백
+        for code, name in _COMMON_STOCKS.items():
+            _stock_name_cache[code] = name
+            _stock_code_cache[name] = code
+            _stock_code_cache[name.replace(" ", "")] = code
+
+    _stock_cache_loaded = True
+    print(f"[INFO] Total stocks in cache: {len(_stock_name_cache)}")
+
+
+class CreditLimitError(Exception):
+    """회사 신용한도 초과 종목 에러."""
+    pass
