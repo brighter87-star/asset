@@ -66,6 +66,8 @@ class MonitorService:
         self._file_mtime: float = 0  # File modification time
         self._pre_market_reloaded: bool = False  # Track pre-market reload
         self.purchased_stocks: Dict[str, dict] = {}  # Track purchased stocks
+        self._unit_value_cache: int = 0  # Cached unit value
+        self._unit_value_time: float = 0  # Cache timestamp
         self._load_purchased_stocks()
         self._load_daily_triggers()
 
@@ -592,21 +594,30 @@ class MonitorService:
             print(f"[{symbol}] Failed to get price: {e}")
             return None
 
-    def get_unit_value(self) -> int:
+    def get_unit_value(self, force_refresh: bool = False) -> int:
         """
-        Get the value of 1 unit in KRW.
+        Get the value of 1 unit in KRW (cached for 60 seconds).
         1 unit = UNIT * 5% of net assets (default).
 
         Returns approximate unit value for position sizing.
         """
+        import time as time_module
+
+        # Use cached value if within 60 seconds
+        if not force_refresh and self._unit_value_cache > 0:
+            if time_module.time() - self._unit_value_time < 60:
+                return self._unit_value_cache
+
         try:
             assets = self.client.get_net_assets()
             net_assets = assets.get("net_assets", 0)
             unit_pct = self.trading_settings.get_unit_percent()  # e.g., 5% if UNIT=1
-            return int(net_assets * unit_pct / 100)
+            self._unit_value_cache = int(net_assets * unit_pct / 100)
+            self._unit_value_time = time_module.time()
+            return self._unit_value_cache
         except Exception as e:
             print(f"[WARNING] Could not get unit value: {e}")
-            return 0
+            return self._unit_value_cache if self._unit_value_cache > 0 else 0
 
     def get_current_units(self, symbol: str) -> float:
         """

@@ -2,11 +2,11 @@
 Watchlist Manager - Add/remove items from watchlist with auto-dating.
 
 Usage:
-    python watchlist_manager.py add 005930 85000 --max-units 2    # Add Samsung @ 85,000원
-    python watchlist_manager.py add 삼성전자 85000                 # Add by name
-    python watchlist_manager.py remove 005930                      # Remove by ticker
-    python watchlist_manager.py update 005930 --target 90000       # Update target price
-    python watchlist_manager.py list                               # List all items
+    python watchlist_manager.py add 삼성전자 85000 --max-units 2    # Add by name
+    python watchlist_manager.py add 005930 85000                     # Add by ticker (converts to name)
+    python watchlist_manager.py remove 삼성전자                       # Remove by name
+    python watchlist_manager.py update 삼성전자 --target 90000       # Update target price
+    python watchlist_manager.py list                                 # List all items
 """
 
 import argparse
@@ -22,12 +22,8 @@ WATCHLIST_PATH = Path(__file__).parent / "watchlist.csv"
 def load_watchlist() -> pd.DataFrame:
     """Load watchlist from CSV."""
     if WATCHLIST_PATH.exists():
-        df = pd.read_csv(WATCHLIST_PATH)
-        # Ensure ticker is string and zero-padded
-        if "ticker" in df.columns:
-            df["ticker"] = df["ticker"].astype(str).str.zfill(6)
-        return df
-    return pd.DataFrame(columns=["ticker", "name", "target_price", "stop_loss_pct", "max_units", "added_date"])
+        return pd.read_csv(WATCHLIST_PATH)
+    return pd.DataFrame(columns=["name", "target_price", "stop_loss_pct", "max_units", "added_date"])
 
 
 def save_watchlist(df: pd.DataFrame):
@@ -35,14 +31,14 @@ def save_watchlist(df: pd.DataFrame):
     df.to_csv(WATCHLIST_PATH, index=False)
 
 
-def resolve_ticker_and_name(ticker_or_name: str) -> tuple:
+def resolve_name(ticker_or_name: str) -> str:
     """
-    Resolve ticker and name from input.
+    Resolve stock name from input.
     Input can be:
-    - 6-digit ticker (e.g., "005930")
-    - Stock name (e.g., "삼성전자")
+    - 6-digit ticker (e.g., "005930") -> returns name
+    - Stock name (e.g., "삼성전자") -> returns name as-is
 
-    Returns (ticker, name) tuple.
+    Returns name string or None if not found.
     """
     input_str = ticker_or_name.strip()
 
@@ -51,34 +47,33 @@ def resolve_ticker_and_name(ticker_or_name: str) -> tuple:
         ticker = input_str.zfill(6)
         name = get_stock_name(ticker)
         if not name:
-            print(f"[WARN] Could not find name for ticker {ticker}")
-        return ticker, name
+            print(f"[ERROR] Could not find name for ticker {ticker}")
+            return None
+        return name
 
-    # Otherwise treat as name
+    # Otherwise treat as name - verify it exists
     ticker = get_stock_code(input_str)
     if not ticker:
-        print(f"[ERROR] Could not find ticker for '{input_str}'")
-        return None, None
+        print(f"[ERROR] Could not find stock '{input_str}'")
+        return None
 
-    name = input_str
-    return ticker, name
+    return input_str
 
 
 def add_item(ticker_or_name: str, target_price: int, max_units: int = 1, stop_loss_pct: float = None):
     """Add item to watchlist with auto-dated added_date."""
     df = load_watchlist()
 
-    ticker, name = resolve_ticker_and_name(ticker_or_name)
-    if not ticker:
+    name = resolve_name(ticker_or_name)
+    if not name:
         return
 
     # Check if already exists
-    if ticker in df["ticker"].values:
-        print(f"[WARN] {name} ({ticker}) already in watchlist. Use 'update' to modify.")
+    if name in df["name"].values:
+        print(f"[WARN] {name} already in watchlist. Use 'update' to modify.")
         return
 
     new_row = {
-        "ticker": ticker,
         "name": name,
         "target_price": target_price,
         "stop_loss_pct": stop_loss_pct if stop_loss_pct else "",
@@ -88,43 +83,39 @@ def add_item(ticker_or_name: str, target_price: int, max_units: int = 1, stop_lo
 
     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     save_watchlist(df)
-    print(f"[OK] Added {name} ({ticker}) @ {target_price:,}원 (max_units={max_units}, added={date.today()})")
+    print(f"[OK] Added {name} @ {target_price:,}원 (max_units={max_units}, added={date.today()})")
 
 
 def remove_item(ticker_or_name: str):
     """Remove item from watchlist."""
     df = load_watchlist()
 
-    ticker, name = resolve_ticker_and_name(ticker_or_name)
-    if not ticker:
-        # Try direct match if resolve failed
-        ticker = ticker_or_name.strip().zfill(6) if ticker_or_name.strip().isdigit() else None
-        if not ticker:
-            return
-
-    if ticker not in df["ticker"].values:
-        print(f"[WARN] {ticker} not in watchlist.")
+    name = resolve_name(ticker_or_name)
+    if not name:
         return
 
-    removed_name = df[df["ticker"] == ticker]["name"].values[0]
-    df = df[df["ticker"] != ticker]
+    if name not in df["name"].values:
+        print(f"[WARN] {name} not in watchlist.")
+        return
+
+    df = df[df["name"] != name]
     save_watchlist(df)
-    print(f"[OK] Removed {removed_name} ({ticker}) from watchlist")
+    print(f"[OK] Removed {name} from watchlist")
 
 
 def update_item(ticker_or_name: str, target_price: int = None, max_units: int = None, stop_loss_pct: float = None):
     """Update existing item in watchlist."""
     df = load_watchlist()
 
-    ticker, name = resolve_ticker_and_name(ticker_or_name)
-    if not ticker:
+    name = resolve_name(ticker_or_name)
+    if not name:
         return
 
-    if ticker not in df["ticker"].values:
-        print(f"[WARN] {ticker} not in watchlist. Use 'add' to create.")
+    if name not in df["name"].values:
+        print(f"[WARN] {name} not in watchlist. Use 'add' to create.")
         return
 
-    idx = df[df["ticker"] == ticker].index[0]
+    idx = df[df["name"] == name].index[0]
 
     if target_price is not None:
         df.loc[idx, "target_price"] = target_price
@@ -134,8 +125,7 @@ def update_item(ticker_or_name: str, target_price: int = None, max_units: int = 
         df.loc[idx, "stop_loss_pct"] = stop_loss_pct
 
     save_watchlist(df)
-    updated_name = df.loc[idx, "name"]
-    print(f"[OK] Updated {updated_name} ({ticker})")
+    print(f"[OK] Updated {name}")
 
 
 def list_items():
@@ -146,11 +136,10 @@ def list_items():
         print("Watchlist is empty.")
         return
 
-    print(f"\n{'Ticker':<8} {'Name':<14} {'Target':>12} {'Max':>5} {'SL%':>6} {'Added':>12}")
-    print("-" * 62)
+    print(f"\n{'Name':<14} {'Target':>12} {'Max':>5} {'SL%':>6} {'Added':>12}")
+    print("-" * 54)
 
     for _, row in df.iterrows():
-        ticker = row["ticker"]
         name = str(row.get("name", ""))[:12]  # Truncate long names
         target = int(row["target_price"])
         max_units = int(row.get("max_units", 1)) if pd.notna(row.get("max_units")) else 1
@@ -159,9 +148,9 @@ def list_items():
         added = row.get("added_date", "")
         added_str = str(added) if pd.notna(added) and added != "" else "-"
 
-        print(f"{ticker:<8} {name:<14} {target:>12,} {max_units:>5} {sl_str:>6} {added_str:>12}")
+        print(f"{name:<14} {target:>12,} {max_units:>5} {sl_str:>6} {added_str:>12}")
 
-    print("-" * 62)
+    print("-" * 54)
     print(f"Total: {len(df)} items")
 
 
@@ -171,18 +160,18 @@ def main():
 
     # add command
     add_parser = subparsers.add_parser("add", help="Add item to watchlist")
-    add_parser.add_argument("ticker", type=str, help="Stock ticker (6-digit) or name (e.g., 005930 or 삼성전자)")
+    add_parser.add_argument("name", type=str, help="Stock name or ticker (e.g., 삼성전자 or 005930)")
     add_parser.add_argument("target_price", type=int, help="Target price for breakout (원)")
     add_parser.add_argument("--max-units", type=int, default=1, help="Max units to buy (default: 1)")
     add_parser.add_argument("--stop-loss", type=float, help="Custom stop loss %")
 
     # remove command
     remove_parser = subparsers.add_parser("remove", help="Remove item from watchlist")
-    remove_parser.add_argument("ticker", type=str, help="Stock ticker or name")
+    remove_parser.add_argument("name", type=str, help="Stock name or ticker")
 
     # update command
     update_parser = subparsers.add_parser("update", help="Update item in watchlist")
-    update_parser.add_argument("ticker", type=str, help="Stock ticker or name")
+    update_parser.add_argument("name", type=str, help="Stock name or ticker")
     update_parser.add_argument("--target", type=int, help="New target price (원)")
     update_parser.add_argument("--max-units", type=int, help="New max units")
     update_parser.add_argument("--stop-loss", type=float, help="New stop loss %")
@@ -193,11 +182,11 @@ def main():
     args = parser.parse_args()
 
     if args.command == "add":
-        add_item(args.ticker, args.target_price, args.max_units, args.stop_loss)
+        add_item(args.name, args.target_price, args.max_units, args.stop_loss)
     elif args.command == "remove":
-        remove_item(args.ticker)
+        remove_item(args.name)
     elif args.command == "update":
-        update_item(args.ticker, args.target, args.max_units, args.stop_loss)
+        update_item(args.name, args.target, args.max_units, args.stop_loss)
     elif args.command == "list":
         list_items()
     else:
