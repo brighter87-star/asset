@@ -564,8 +564,8 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
             holdings_with_return.append((pos, current, return_pct))
 
-        # Sort by return % ascending (lowest first for stop loss monitoring)
-        holdings_with_return.sort(key=lambda x: x[2])
+        # Sort by return % descending (highest first)
+        holdings_with_return.sort(key=lambda x: x[2], reverse=True)
 
         print(f"\n[Holdings Stop Loss Monitor]")
         print(f"{'CODE':<8} {'NAME':<12} {'ENTRY':>10} {'CURRENT':>10} {'P/L%':>8} {'STOP':>10} {'STATUS':>8}")
