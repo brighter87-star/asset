@@ -406,13 +406,14 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
     print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring [{price_market}]{close_marker}")
     print(f"Breakout: 8:00-8:05, 9:00-9:10, 14:30-15:20 | Pyramid: 19:55-20:00{active_marker}")
-    print("=" * 78)
+    print("=" * 82)
 
-    # Header
-    print(f"{'CODE':<8} {'NAME':<12} {'TARGET':>12} {'CURRENT':>12} {'DIFF':>10} {'STATUS':>10}")
-    print("-" * 78)
+    # Header - show units info
+    print(f"{'CODE':<8} {'NAME':<12} {'TARGET':>12} {'CURRENT':>12} {'DIFF':>10} {'UNITS':>8} {'STATUS':>8}")
+    print("-" * 82)
 
-    for item in monitor.watchlist:
+    # Only show items that haven't reached max_units
+    for item in monitor.get_watchlist_filtered():
         ticker = item['ticker']
         target = item['target_price']
 
@@ -431,6 +432,11 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
         current = price_data.get('last', 0)
         if current <= 0:
             current = holdings_prices.get(ticker, {}).get('last', 0)
+
+        # Get current/max units info
+        current_units = monitor.get_current_units(ticker)
+        max_units = item.get('max_units', 1)
+        units_str = f"{current_units:.1f}/{max_units}"
 
         if current > 0:
             if ticker in positions:
@@ -455,17 +461,17 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
                 diff_pct = ((target - current) / current) * 100
                 pnl_str = f"{diff_pct:+.2f}%"
                 if diff_pct <= 0:
-                    status_str = "BREAKOUT"
+                    status_str = "BREAK"
                 elif diff_pct <= 1:
                     status_str = "NEAR"
                 else:
                     status_str = "WAIT"
 
-            print(f"{ticker:<8} {name_display} {target:>12,} {current:>12,} {pnl_str:>10} {status_str:>10}")
+            print(f"{ticker:<8} {name_display} {target:>12,} {current:>12,} {pnl_str:>10} {units_str:>8} {status_str:>8}")
         else:
-            print(f"{ticker:<8} {name_display} {target:>12,} {'---':>12} {'---':>10} {'LOADING':>10}")
+            print(f"{ticker:<8} {name_display} {target:>12,} {'---':>12} {'---':>10} {units_str:>8} {'LOAD':>8}")
 
-    print("=" * 78)
+    print("=" * 82)
 
     # Show today's purchases section (only stocks bot purchased today via daily_triggers)
     today_positions = [

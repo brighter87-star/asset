@@ -294,6 +294,8 @@ class MonitorService:
                     "stop_loss_pct": None,
                     "name": name,
                     "exchange": "KRX",  # Default exchange
+                    "max_units": 1,  # Default max units
+                    "added_date": None,
                 }
 
                 # Optional custom stop loss
@@ -303,6 +305,14 @@ class MonitorService:
                 # Optional exchange (KRX or NXT)
                 if "exchange" in row and not pd.isna(row["exchange"]):
                     item["exchange"] = str(row["exchange"]).strip().upper()
+
+                # Optional max_units (default 1)
+                if "max_units" in row and not pd.isna(row["max_units"]):
+                    item["max_units"] = int(row["max_units"])
+
+                # Optional added_date
+                if "added_date" in row and not pd.isna(row["added_date"]):
+                    item["added_date"] = str(row["added_date"])
 
                 watchlist.append(item)
 
@@ -582,17 +592,83 @@ class MonitorService:
             print(f"[{symbol}] Failed to get price: {e}")
             return None
 
+    def get_unit_value(self) -> int:
+        """
+        Get the value of 1 unit in KRW.
+        1 unit = UNIT * 5% of net assets (default).
+
+        Returns approximate unit value for position sizing.
+        """
+        try:
+            assets = self.client.get_net_assets()
+            net_assets = assets.get("net_assets", 0)
+            unit_pct = self.trading_settings.get_unit_percent()  # e.g., 5% if UNIT=1
+            return int(net_assets * unit_pct / 100)
+        except Exception as e:
+            print(f"[WARNING] Could not get unit value: {e}")
+            return 0
+
+    def get_current_units(self, symbol: str) -> float:
+        """
+        Calculate current units for a stock based on holdings value.
+
+        current_units = position_value / unit_value
+
+        Returns float (can be 0.5, 1, 1.5, etc.)
+        """
+        unit_value = self.get_unit_value()
+        if unit_value <= 0:
+            return 0
+
+        # Check positions
+        pos = self.order_service.positions.get(symbol)
+        if not pos:
+            return 0
+
+        entry_price = pos.get("entry_price", 0)
+        quantity = pos.get("quantity", 0)
+
+        if entry_price <= 0 or quantity <= 0:
+            return 0
+
+        position_value = entry_price * quantity
+        return round(position_value / unit_value, 2)
+
+    def can_buy_more_units(self, item: dict) -> bool:
+        """
+        Check if more units can be bought for a stock.
+
+        Returns True if current_units < max_units.
+        """
+        symbol = item["ticker"]
+        max_units = item.get("max_units", 1)
+        current_units = self.get_current_units(symbol)
+
+        return current_units < max_units
+
+    def get_remaining_units(self, item: dict) -> float:
+        """Get remaining units that can be bought."""
+        max_units = item.get("max_units", 1)
+        current_units = self.get_current_units(item["ticker"])
+        return max(0, max_units - current_units)
+
+    def get_watchlist_filtered(self) -> List[dict]:
+        """
+        Get watchlist filtered to only include items that haven't reached max_units.
+        Used for display purposes to hide fully-allocated stocks.
+        """
+        return [item for item in self.watchlist if self.can_buy_more_units(item)]
+
     def check_breakout_entry(self, item: dict) -> bool:
         """
         Check if breakout entry condition is met.
 
         Returns True if:
         - Within valid breakout time window:
-          8:00-8:05 (NXT), 9:00-9:10 (KRX), 14:30-15:30 (KRX), 19:30-20:00 (NXT)
+          8:00-8:05 (NXT), 9:00-9:10 (KRX), 14:30-15:20 (KRX), 19:30-20:00 (NXT)
         - Current price >= target price
         - Not already triggered today
-        - Not already have position
-        - Not already purchased (user must remove from watchlist.csv to re-enable)
+        - current_units < max_units (can still buy more)
         """
         symbol = item["ticker"]
         target_price = item["target_price"]
@@ -605,12 +681,8 @@ class MonitorService:
         if symbol in self.daily_triggers:
             return False
 
-        # Already purchased? (user must manually remove from watchlist.csv)
-        if self.is_already_purchased(symbol):
-            return False
-
-        # Already have position?
-        if self.order_service.has_position(symbol):
+        # Check if we can buy more units (current_units < max_units)
+        if not self.can_buy_more_units(item):
             return False
 
         # Get current price
@@ -635,8 +707,7 @@ class MonitorService:
         - It's market open time
         - Open price > target price
         - Not already triggered today
-        - Not already have position
-        - Not already purchased (user must remove from watchlist.csv to re-enable)
+        - current_units < max_units (can still buy more)
         """
         symbol = item["ticker"]
         target_price = item["target_price"]
@@ -644,11 +715,8 @@ class MonitorService:
         if symbol in self.daily_triggers:
             return False
 
-        # Already purchased? (user must manually remove from watchlist.csv)
-        if self.is_already_purchased(symbol):
-            return False
-
-        if self.order_service.has_position(symbol):
+        # Check if we can buy more units (current_units < max_units)
+        if not self.can_buy_more_units(item):
             return False
 
         price_data = self.get_price(symbol)
