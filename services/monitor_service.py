@@ -670,6 +670,16 @@ class MonitorService:
         """
         return [item for item in self.watchlist if self.can_buy_more_units(item)]
 
+    def has_today_position(self, symbol: str) -> bool:
+        """
+        Check if we already have a position purchased today.
+        This is a safety check to prevent double-buying on bot restart.
+        """
+        pos = self.order_service.positions.get(symbol)
+        if pos and pos.get('today_qty', 0) > 0:
+            return True
+        return False
+
     def check_breakout_entry(self, item: dict) -> bool:
         """
         Check if breakout entry condition is met.
@@ -690,6 +700,10 @@ class MonitorService:
 
         # Already triggered today?
         if symbol in self.daily_triggers:
+            return False
+
+        # Safety check: already have today's position (prevents double-buy on bot restart)
+        if self.has_today_position(symbol):
             return False
 
         # Check if we can buy more units (current_units < max_units)
@@ -724,6 +738,10 @@ class MonitorService:
         target_price = item["target_price"]
 
         if symbol in self.daily_triggers:
+            return False
+
+        # Safety check: already have today's position (prevents double-buy on bot restart)
+        if self.has_today_position(symbol):
             return False
 
         # Check if we can buy more units (current_units < max_units)

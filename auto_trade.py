@@ -495,10 +495,11 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
     print("=" * 82)
 
-    # Show today's purchases section (only stocks bot purchased today via daily_triggers)
+    # Show today's purchases section (all stocks with today_qty > 0)
+    # Shows regardless of whether bot purchased or user purchased manually
     today_positions = [
         pos for pos in positions.values()
-        if pos.get('today_qty', 0) > 0 and pos['symbol'] in monitor.daily_triggers
+        if pos.get('today_qty', 0) > 0
     ]
 
     if today_positions:
