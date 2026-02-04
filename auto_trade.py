@@ -412,8 +412,35 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     print(f"{'CODE':<8} {'NAME':<12} {'TARGET':>12} {'CURRENT':>12} {'DIFF':>10} {'UNITS':>8} {'STATUS':>8}")
     print("-" * 82)
 
-    # Only show items that haven't reached max_units
+    # Calculate diff for all items and sort by diff ascending (closest to breakout first)
+    watchlist_with_diff = []
     for item in monitor.get_watchlist_filtered():
+        ticker = item['ticker']
+        target = item['target_price']
+
+        price_data = prices.get(ticker, {})
+        current = price_data.get('last', 0)
+        if current <= 0:
+            current = holdings_prices.get(ticker, {}).get('last', 0)
+
+        # Calculate diff_pct for sorting
+        if current > 0:
+            if ticker in positions:
+                pos = positions[ticker]
+                entry = pos.get('entry_price', 0)
+                diff_pct = ((current - entry) / entry) * 100 if entry > 0 else 999
+            else:
+                diff_pct = ((target - current) / current) * 100
+        else:
+            diff_pct = 999  # No price, put at bottom
+
+        watchlist_with_diff.append((item, current, diff_pct))
+
+    # Sort by diff ascending (closest to target first)
+    watchlist_with_diff.sort(key=lambda x: x[2])
+
+    # Display sorted items
+    for item, current, _ in watchlist_with_diff:
         ticker = item['ticker']
         target = item['target_price']
 
@@ -427,11 +454,6 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
                 truncated += c
             name = truncated
         name_display = pad_korean(name, 12, 'left')
-
-        price_data = prices.get(ticker, {})
-        current = price_data.get('last', 0)
-        if current <= 0:
-            current = holdings_prices.get(ticker, {}).get('last', 0)
 
         # Get current/max units info
         current_units = monitor.get_current_units(ticker)
@@ -542,8 +564,8 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
             holdings_with_return.append((pos, current, return_pct))
 
-        # Sort by return % descending
-        holdings_with_return.sort(key=lambda x: x[2], reverse=True)
+        # Sort by return % ascending (lowest first for stop loss monitoring)
+        holdings_with_return.sort(key=lambda x: x[2])
 
         print(f"\n[Holdings Stop Loss Monitor]")
         print(f"{'CODE':<8} {'NAME':<12} {'ENTRY':>10} {'CURRENT':>10} {'P/L%':>8} {'STOP':>10} {'STATUS':>8}")
