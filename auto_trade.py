@@ -359,41 +359,34 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     import os
     now = datetime.now()
 
-    # holdings_prices를 fallback으로 사용
     if holdings_prices is None:
         holdings_prices = {}
 
-    # Clear screen on Windows
     if clear:
         os.system('cls' if os.name == 'nt' else 'clear')
 
-    # 보유 종목 정보 (평가손익 표시용)
     positions = {pos['symbol']: pos for pos in monitor.order_service.get_open_positions()}
 
-    # Header with timestamp (shows it's updating)
     print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring")
-    print("=" * 85)
+    print("=" * 78)
 
-    # Watchlist section (보유 종목은 평가손익 표시)
-    print("[Watchlist]")
-    print(f"{'코드':<8} {'종목명':<14} {'기준가':>12} {'현재가':>12} {'손익률':>10} {'상태':>8}")
-    print("-" * 72)
+    # Header
+    print(f"{'CODE':<8} {'NAME':<12} {'TARGET':>12} {'CURRENT':>12} {'DIFF':>10} {'STATUS':>10}")
+    print("-" * 78)
 
     for item in monitor.watchlist:
         ticker = item['ticker']
         target = item['target_price']
 
         name = item.get('name', '') or get_stock_name(ticker)
-        name_display = pad_korean(name[:8] if len(name) > 8 else name, 14)
+        name_display = name[:10] if len(name) > 10 else name
 
-        # poller에서 먼저, 없으면 holdings에서 fallback
         price_data = prices.get(ticker, {})
         current = price_data.get('last', 0)
         if current <= 0:
             current = holdings_prices.get(ticker, {}).get('last', 0)
 
         if current > 0:
-            # 보유 종목이면 평가손익률 표시
             if ticker in positions:
                 pos = positions[ticker]
                 entry = pos.get('entry_price', 0)
@@ -401,34 +394,32 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
                 if entry > 0:
                     pnl_pct = ((current - entry) / entry) * 100
                     pnl_str = f"{pnl_pct:+.2f}%"
-                    # 상태: 손절 경고 or 수익/손실
                     if current <= stop_loss:
-                        status_str = "<<손절!"
+                        status_str = "STOP!"
                     elif pnl_pct <= -5:
-                        status_str = "손절경고"
+                        status_str = "WARN"
                     elif pnl_pct > 0:
-                        status_str = "보유▲"
+                        status_str = "HOLD+"
                     else:
-                        status_str = "보유▼"
+                        status_str = "HOLD-"
                 else:
                     pnl_str = "---"
-                    status_str = "보유"
+                    status_str = "HOLD"
             else:
-                # 미보유: 기준가 대비 차이
                 diff_pct = ((target - current) / current) * 100
                 pnl_str = f"{diff_pct:+.2f}%"
                 if diff_pct <= 0:
-                    status_str = "돌파!"
+                    status_str = "BREAKOUT"
                 elif diff_pct <= 1:
-                    status_str = "임박"
+                    status_str = "NEAR"
                 else:
-                    status_str = "대기"
+                    status_str = "WAIT"
 
-            print(f"{ticker:<8} {name_display} {target:>10,}원 {current:>10,}원 {pnl_str:>10} {status_str:>8}")
+            print(f"{ticker:<8} {name_display:<12} {target:>12,} {current:>12,} {pnl_str:>10} {status_str:>10}")
         else:
-            print(f"{ticker:<8} {name_display} {target:>10,}원 {'---':>10} {'---':>10} {'연결중':>8}")
+            print(f"{ticker:<8} {name_display:<12} {target:>12,} {'---':>12} {'---':>10} {'LOADING':>10}")
 
-    print("=" * 72)
+    print("=" * 78)
 
 
 def run_trading_loop():
