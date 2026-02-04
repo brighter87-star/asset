@@ -189,14 +189,48 @@ class KiwoomAPIClient:
             print(f"✗ Failed to fetch trade history: {e}")
             raise
 
-    def get_holdings(self) -> Dict[str, Any]:
+    def _is_nxt_only_hours(self) -> bool:
+        """
+        Check if we're in NXT-only trading hours (KRX closed, NXT open).
+
+        Returns True during:
+        - 8:00 ~ 8:50 (NXT morning before KRX opens)
+        - 15:40 ~ 20:00 (NXT afternoon/evening after KRX closes)
+        """
+        from datetime import time as dt_time
+        from zoneinfo import ZoneInfo
+
+        KST = ZoneInfo("Asia/Seoul")
+        now_kst = datetime.now(KST)
+
+        if now_kst.weekday() >= 5:
+            return False
+
+        current_time = now_kst.time()
+
+        # NXT morning session (before KRX opens): 8:00 ~ 8:50
+        nxt_morning = dt_time(8, 0) <= current_time < dt_time(8, 50)
+
+        # NXT afternoon/evening session (after KRX closes): 15:40 ~ 20:00
+        nxt_afternoon = dt_time(15, 40) <= current_time < dt_time(20, 0)
+
+        return nxt_morning or nxt_afternoon
+
+    def get_holdings(self, market_type: str = "AUTO") -> Dict[str, Any]:
         """
         Fetch current holdings from Kiwoom API with continuous query support.
+
+        Args:
+            market_type: "KRX", "NXT", or "AUTO" (auto-detect based on time)
 
         Returns:
             Full holdings data from API response (merged from all pages)
         """
         token = self.get_access_token()
+
+        # Auto-detect market type based on current time
+        if market_type == "AUTO":
+            market_type = "NXT" if self._is_nxt_only_hours() else "KRX"
 
         # API endpoint for account status (kt00004)
         url = f"{self.base_url}/api/dostk/acnt"
@@ -209,7 +243,7 @@ class KiwoomAPIClient:
 
         body = {
             "qry_tp": "1",  # 조회구분
-            "dmst_stex_tp": "KRX",  # 국내외구분
+            "dmst_stex_tp": market_type,  # 국내외구분 (KRX or NXT)
         }
 
         try:
