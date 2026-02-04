@@ -1852,10 +1852,11 @@ class KiwoomTradingClient(KiwoomAPIClient):
 
     def get_stock_price_with_fallback(self, stock_code: str, market_type: str = "KRX") -> Dict[str, Any]:
         """
-        종목 현재가 조회 (NXT 실패 시 KRX로 폴백)
+        종목 현재가 조회 (NXT 실패 시 KRX로 폴백, 둘 다 실패 시 holdings DB 캐시 사용)
 
         일부 종목은 NXT를 지원하지 않아 에러가 발생할 수 있음.
         NXT 조회 실패 또는 가격이 0인 경우 KRX로 재시도.
+        KRX도 0인 경우 (장 시작 전) holdings DB에서 캐시된 가격 사용.
 
         Args:
             stock_code: 종목코드 (6자리)
@@ -1868,8 +1869,26 @@ class KiwoomTradingClient(KiwoomAPIClient):
 
         # NXT 조회 실패 또는 가격이 0인 경우 KRX로 폴백
         if market_type == "NXT" and result.get("last", 0) == 0:
-            # print(f"[{stock_code}] NXT price unavailable, falling back to KRX")
             result = self.get_stock_price(stock_code, market_type="KRX")
+
+        # KRX도 0인 경우 (장 시작 전) holdings DB에서 캐시된 가격 사용
+        if result.get("last", 0) == 0:
+            try:
+                from db.connection import get_connection
+                conn = get_connection()
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT cur_prc FROM holdings
+                        WHERE REPLACE(stk_cd, 'A', '') = %s
+                        ORDER BY snapshot_date DESC LIMIT 1
+                    """, (stock_code,))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        result["last"] = int(row[0])
+                        result["market"] = "CACHE"
+                conn.close()
+            except Exception:
+                pass
 
         return result
 
