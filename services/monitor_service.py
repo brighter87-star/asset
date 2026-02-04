@@ -20,6 +20,7 @@ WATCHLIST_CSV = WATCHLIST_DIR / "watchlist.csv"
 WATCHLIST_XLSX = WATCHLIST_DIR / "watchlist.xlsx"
 SETTINGS_CSV = WATCHLIST_DIR / "settings.csv"
 PURCHASED_STOCKS_FILE = WATCHLIST_DIR / "purchased_stocks.json"
+DAILY_TRIGGERS_FILE = WATCHLIST_DIR / "daily_triggers.json"
 
 # Korea timezone
 KST = ZoneInfo("Asia/Seoul")
@@ -66,6 +67,7 @@ class MonitorService:
         self._pre_market_reloaded: bool = False  # Track pre-market reload
         self.purchased_stocks: Dict[str, dict] = {}  # Track purchased stocks
         self._load_purchased_stocks()
+        self._load_daily_triggers()
 
     def _load_purchased_stocks(self):
         """Load purchased stocks from JSON file."""
@@ -85,6 +87,39 @@ class MonitorService:
                 json.dump(self.purchased_stocks, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[WARNING] Failed to save purchased stocks: {e}")
+
+    def _load_daily_triggers(self):
+        """Load daily triggers from JSON file (persists across restarts)."""
+        try:
+            if DAILY_TRIGGERS_FILE.exists():
+                with open(DAILY_TRIGGERS_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    # Check if the saved date matches today
+                    saved_date = data.get("date")
+                    today = datetime.now(KST).strftime("%Y-%m-%d")
+                    if saved_date == today:
+                        self.daily_triggers = data.get("triggers", {})
+                        print(f"[INFO] Loaded {len(self.daily_triggers)} daily triggers from file")
+                    else:
+                        # Different day, reset triggers
+                        self.daily_triggers = {}
+                        print(f"[INFO] Daily triggers file is from {saved_date}, starting fresh for {today}")
+        except Exception as e:
+            print(f"[WARNING] Failed to load daily triggers: {e}")
+            self.daily_triggers = {}
+
+    def _save_daily_triggers(self):
+        """Save daily triggers to JSON file (persists across restarts)."""
+        try:
+            today = datetime.now(KST).strftime("%Y-%m-%d")
+            data = {
+                "date": today,
+                "triggers": self.daily_triggers
+            }
+            with open(DAILY_TRIGGERS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[WARNING] Failed to save daily triggers: {e}")
 
     def mark_as_purchased(self, symbol: str, name: str = "", price: int = 0):
         """
@@ -525,6 +560,7 @@ class MonitorService:
             "entry_time": datetime.now().isoformat(),
             "status": "pending",
         }
+        self._save_daily_triggers()  # Persist to file
 
         price_data = self.get_price(symbol)
         if not price_data:
@@ -549,6 +585,7 @@ class MonitorService:
                 "status": "success",
                 "entry_price": entry_price,
             })
+            self._save_daily_triggers()  # Persist to file
             # Mark as purchased to prevent duplicate buys
             # User must remove from watchlist.csv to re-enable buying
             stock_name = item.get("name", "") or get_stock_name(symbol)
@@ -556,6 +593,7 @@ class MonitorService:
             return True
         else:
             self.daily_triggers[symbol]["status"] = "order_failed"
+            self._save_daily_triggers()  # Persist to file
             return False
 
     def check_and_execute_stop_loss(self) -> List[dict]:
@@ -707,6 +745,7 @@ class MonitorService:
     def reset_daily_triggers(self):
         """Reset daily triggers (call at start of new trading day)."""
         self.daily_triggers = {}
+        self._save_daily_triggers()  # Persist to file
         print("[INFO] Daily triggers reset")
 
     def run_monitoring_cycle(self) -> dict:
