@@ -95,18 +95,17 @@ class OrderService:
                 """, (today,))
                 all_holdings = cur.fetchall()
 
-                # 2. 오늘 매수분 (loan_dt가 오늘인 신용매수)
+                # 2. 오늘 매수분 (tdy_buyq > 0 인 종목)
                 cur.execute("""
                     SELECT
                         REPLACE(stk_cd, 'A', '') as stock_code,
                         crd_class,
-                        SUM(rmnd_qty) as today_qty,
-                        SUM(rmnd_qty * avg_prc) / SUM(rmnd_qty) as today_avg_price
+                        SUM(tdy_buyq) as today_qty,
+                        MAX(avg_prc) as today_avg_price
                     FROM holdings
-                    WHERE snapshot_date = %s AND rmnd_qty > 0
-                      AND loan_dt = %s
+                    WHERE snapshot_date = %s AND tdy_buyq > 0
                     GROUP BY stk_cd, crd_class
-                """, (today, today_str))
+                """, (today,))
                 today_credit_buys = {
                     (row[0].zfill(6) if row[0] else "", row[1]): {
                         "qty": int(row[2] or 0),

@@ -642,7 +642,9 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
                     })
         conn.close()
 
-        if all_lots:
+        if not all_lots:
+            print(f"\n[Lots Near Stop Loss] No lots in daily_lots table")
+        elif all_lots:
             # Sort by return % ascending (worst first)
             all_lots.sort(key=lambda x: x['return_pct'])
             bottom_lots = all_lots[:5]
