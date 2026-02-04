@@ -32,6 +32,11 @@ logs/
 
 # Runtime files
 .positions.json
+purchased_stocks.json
+
+# Trading config (managed on server)
+watchlist.csv
+settings.csv
 
 # Claude settings
 .claude/
