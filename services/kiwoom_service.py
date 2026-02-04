@@ -2,7 +2,7 @@
 Kiwoom API service for fetching account trade history and holdings.
 """
 
-from datetime import date
+from datetime import date, datetime
 from typing import List, Dict, Any
 import requests
 import pymysql
