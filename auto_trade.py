@@ -668,6 +668,18 @@ def run_trading_loop():
                 monitor.load_watchlist()  # Reload watchlist
                 last_date = today
 
+            # Check for watchlist file changes and reload if needed
+            if monitor._check_file_changed():
+                print(f"[{now.strftime('%H:%M:%S')}] Watchlist file changed, reloading...")
+                monitor.load_settings()
+                monitor.load_watchlist()
+                # Add any new tickers to the poller
+                for item in monitor.watchlist:
+                    ticker = item['ticker']
+                    if ticker not in price_source.subscribed_stocks:
+                        print(f"  + Adding {ticker} to price monitor")
+                        price_source.subscribe([ticker])
+
             # Periodic holdings sync (backup for WebSocket failures)
             if current_time - last_holdings_sync_time >= HOLDINGS_SYNC_INTERVAL:
                 try:
