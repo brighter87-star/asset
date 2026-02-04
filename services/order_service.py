@@ -62,7 +62,7 @@ class OrderService:
     def sync_positions_from_db(self, stop_loss_pct: float = 7.0):
         """
         holdings 테이블에서 보유종목을 로드하여 positions에 동기화.
-        main.py --init 실행 후 holdings 테이블에 저장된 평균가 사용.
+        오늘 매수분(loan_dt가 오늘인 신용, 또는 오늘 매수한 현금)을 별도 추적.
 
         Args:
             stop_loss_pct: 기본 손절률 (%)
@@ -75,10 +75,10 @@ class OrderService:
         try:
             conn = get_connection()
             today = date.today()
+            today_str = today.strftime("%Y%m%d")
 
             with conn.cursor() as cur:
-                # holdings 테이블에서 오늘 날짜 데이터 조회
-                # 종목+신용구분별 집계 (loan_dt 무관하게)
+                # 1. 전체 보유 종목 집계
                 cur.execute("""
                     SELECT
                         REPLACE(stk_cd, 'A', '') as stock_code,
@@ -92,7 +92,27 @@ class OrderService:
                     WHERE snapshot_date = %s AND rmnd_qty > 0
                     GROUP BY stk_cd, crd_class
                 """, (today,))
-                rows = cur.fetchall()
+                all_holdings = cur.fetchall()
+
+                # 2. 오늘 매수분 (loan_dt가 오늘인 신용매수)
+                cur.execute("""
+                    SELECT
+                        REPLACE(stk_cd, 'A', '') as stock_code,
+                        crd_class,
+                        SUM(rmnd_qty) as today_qty,
+                        SUM(rmnd_qty * avg_prc) / SUM(rmnd_qty) as today_avg_price
+                    FROM holdings
+                    WHERE snapshot_date = %s AND rmnd_qty > 0
+                      AND loan_dt = %s
+                    GROUP BY stk_cd, crd_class
+                """, (today, today_str))
+                today_credit_buys = {
+                    (row[0].zfill(6) if row[0] else "", row[1]): {
+                        "qty": int(row[2] or 0),
+                        "price": int(row[3] or 0)
+                    }
+                    for row in cur.fetchall()
+                }
 
             conn.close()
 
@@ -100,7 +120,7 @@ class OrderService:
             self.positions = {}
 
             synced = 0
-            for row in rows:
+            for row in all_holdings:
                 stock_code, stock_name, crd_class, total_qty, avg_price, total_cost, current_price = row
 
                 if not stock_code or not total_qty or total_qty <= 0:
@@ -111,7 +131,6 @@ class OrderService:
                 total_qty = int(total_qty)
                 total_cost = int(total_cost or 0)
 
-                # 평균가가 0이면 스킵 (데이터 오류)
                 if avg_price <= 0:
                     print(f"[WARN] {stock_code}: avg_price=0, skipping")
                     continue
@@ -122,6 +141,14 @@ class OrderService:
                 if len(stock_code) < 6:
                     stock_code = stock_code.zfill(6)
 
+                # 오늘 매수분 확인 (신용: loan_dt 기준)
+                today_buy = today_credit_buys.get((stock_code, crd_class), {})
+                today_qty = today_buy.get("qty", 0)
+                today_entry_price = today_buy.get("price", 0)
+
+                # 오늘 매수분 손절가
+                today_stop_loss_price = int(today_entry_price * (1 - stop_loss_pct / 100)) if today_entry_price > 0 else 0
+
                 self.positions[stock_code] = {
                     "symbol": stock_code,
                     "name": stock_name or "",
@@ -130,12 +157,19 @@ class OrderService:
                     "stop_loss_price": stop_loss_price,
                     "stop_loss_pct": stop_loss_pct,
                     "status": "open",
-                    "crd_class": crd_class,  # CASH / CREDIT
+                    "crd_class": crd_class,
                     "total_cost": total_cost,
                     "current_price": current_price,
                     "source": "holdings",
+                    # 오늘 매수분 별도 추적
+                    "today_qty": today_qty,
+                    "today_entry_price": today_entry_price,
+                    "today_stop_loss_price": today_stop_loss_price,
                 }
                 synced += 1
+
+                if today_qty > 0:
+                    print(f"[SYNC] {stock_code}: total={total_qty}, today={today_qty}@{today_entry_price:,}")
 
             self._save_positions()
             print(f"[SYNC] Loaded {synced} positions from holdings DB")
@@ -143,7 +177,6 @@ class OrderService:
 
         except Exception as e:
             print(f"[ERROR] Failed to sync from DB: {e}")
-            # DB 실패 시 API fallback
             return self._sync_holdings_from_api_fallback(stop_loss_pct)
 
     def _sync_holdings_from_api_fallback(self, stop_loss_pct: float = 7.0):
@@ -419,15 +452,16 @@ class OrderService:
 
         return result
 
-    def execute_sell(self, symbol: str, price: int, reason: str = "") -> Optional[dict]:
+    def execute_sell(self, symbol: str, price: int, reason: str = "", sell_qty: int = 0) -> Optional[dict]:
         """
-        Execute sell order for entire position.
+        Execute sell order for position (full or partial).
         Uses kt10001 for CASH positions, kt10007 for CREDIT positions.
 
         Args:
             symbol: Stock code
             price: Sell price
             reason: Reason for selling (for logging)
+            sell_qty: Quantity to sell (0 = sell all)
 
         Returns:
             Order result or None if failed
@@ -437,25 +471,30 @@ class OrderService:
             return None
 
         pos = self.positions[symbol]
-        quantity = pos.get("quantity", 0)
+        total_qty = pos.get("quantity", 0)
         crd_class = pos.get("crd_class", "CASH")
 
-        if quantity <= 0:
+        if total_qty <= 0:
             print(f"[{symbol}] No shares to sell")
             return None
 
+        # 매도 수량 결정 (0이면 전량 매도)
+        quantity = sell_qty if sell_qty > 0 else total_qty
+        quantity = min(quantity, total_qty)  # 보유 수량 초과 방지
+
+        is_partial = quantity < total_qty
+        sell_type = "PARTIAL" if is_partial else "FULL"
+
         # 신용/현금 구분
         order_type = "CREDIT" if crd_class == "CREDIT" else "CASH"
-        trade_logger.log_order_attempt(symbol, "SELL", quantity, price, order_type, reason)
+        trade_logger.log_order_attempt(symbol, "SELL", quantity, price, order_type, f"{reason} ({sell_type})")
 
         try:
             if crd_class == "CREDIT":
-                # 신용매도 (kt10007)
-                print(f"[{symbol}] 신용매도 주문 (kt10007)")
+                print(f"[{symbol}] 신용매도 주문 ({sell_type}, {quantity}주)")
                 result = self.client.sell_credit_order(symbol, quantity, price)
             else:
-                # 현금매도 (kt10001)
-                print(f"[{symbol}] 현금매도 주문 (kt10001)")
+                print(f"[{symbol}] 현금매도 주문 ({sell_type}, {quantity}주)")
                 result = self.client.sell_order(symbol, quantity, price)
 
             # Calculate P&L
@@ -468,18 +507,25 @@ class OrderService:
                 success=True,
                 order_no=result.get("order_no", ""),
                 order_time=result.get("order_time", ""),
-                message=result.get("message", ""),
+                message=f"{sell_type}: {result.get('message', '')}",
             )
 
-            # Close position
-            pos["status"] = "closed"
-            pos["exit_price"] = price
-            pos["exit_time"] = datetime.now().isoformat()
-            pos["exit_reason"] = reason
-            pos["realized_pnl"] = pnl
-            pos["realized_pnl_pct"] = pnl_pct
-
-            trade_logger.log_position_update(symbol, "CLOSE", quantity, price, 0, pnl)
+            if is_partial:
+                # 부분 매도: 수량 차감, today_qty 리셋
+                pos["quantity"] = total_qty - quantity
+                pos["today_qty"] = 0
+                pos["today_entry_price"] = 0
+                pos["today_stop_loss_price"] = 0
+                trade_logger.log_position_update(symbol, "PARTIAL_SELL", quantity, price, pos["quantity"], pnl)
+            else:
+                # 전량 매도: 포지션 종료
+                pos["status"] = "closed"
+                pos["exit_price"] = price
+                pos["exit_time"] = datetime.now().isoformat()
+                pos["exit_reason"] = reason
+                pos["realized_pnl"] = pnl
+                pos["realized_pnl_pct"] = pnl_pct
+                trade_logger.log_position_update(symbol, "CLOSE", quantity, price, 0, pnl)
 
             self._save_positions()
             return result
@@ -491,33 +537,72 @@ class OrderService:
             )
             return None
 
-    def check_stop_loss(self, symbol: str, current_price: int) -> bool:
+    def check_stop_loss(self, symbol: str, current_price: int) -> dict:
         """
         Check if stop loss is triggered.
 
         Returns:
-            True if stop loss triggered
+            dict with:
+                - triggered: True if any stop loss triggered
+                - type: "today" (today's qty only) or "all" (entire position)
+                - qty: quantity to sell
         """
+        result = {"triggered": False, "type": None, "qty": 0}
+
         if symbol not in self.positions:
-            return False
+            return result
 
         pos = self.positions[symbol]
         if pos.get("status") != "open":
-            return False
+            return result
 
         entry_price = pos.get("entry_price", 0)
         stop_loss_pct = pos.get("stop_loss_pct", self.settings.STOP_LOSS_PCT)
+        total_qty = pos.get("quantity", 0)
+
+        # 오늘 매수분 정보
+        today_qty = pos.get("today_qty", 0)
+        today_entry_price = pos.get("today_entry_price", 0)
 
         if entry_price <= 0:
-            return False
+            return result
 
-        change_pct = ((current_price / entry_price) - 1) * 100
+        # 1. 오늘 매수분 손절 체크 (오늘 매수분이 있고, 오늘 매수가 기준 -7%)
+        if today_qty > 0 and today_entry_price > 0:
+            today_change_pct = ((current_price / today_entry_price) - 1) * 100
+            if today_change_pct <= -stop_loss_pct:
+                trade_logger.log_stop_loss(
+                    symbol, today_entry_price, current_price,
+                    stop_loss_pct, today_change_pct
+                )
+                print(f"[STOP] {symbol}: Today's buy stop loss triggered ({today_change_pct:+.2f}%)")
+                return {
+                    "triggered": True,
+                    "type": "today",
+                    "qty": today_qty,
+                    "entry_price": today_entry_price,
+                    "change_pct": today_change_pct,
+                }
 
-        if change_pct <= -stop_loss_pct:
-            trade_logger.log_stop_loss(symbol, entry_price, current_price, stop_loss_pct, change_pct)
-            return True
+        # 2. 전체 포지션 손절 체크 (전체 평균가 기준 -7%)
+        total_change_pct = ((current_price / entry_price) - 1) * 100
+        if total_change_pct <= -stop_loss_pct:
+            trade_logger.log_stop_loss(symbol, entry_price, current_price, stop_loss_pct, total_change_pct)
+            print(f"[STOP] {symbol}: Total position stop loss triggered ({total_change_pct:+.2f}%)")
+            return {
+                "triggered": True,
+                "type": "all",
+                "qty": total_qty,
+                "entry_price": entry_price,
+                "change_pct": total_change_pct,
+            }
 
-        return False
+        return result
+
+    def check_stop_loss_simple(self, symbol: str, current_price: int) -> bool:
+        """Simple stop loss check (backward compatible). Returns True if triggered."""
+        result = self.check_stop_loss(symbol, current_price)
+        return result.get("triggered", False)
 
     def get_position(self, symbol: str) -> Optional[dict]:
         """Get position for symbol."""

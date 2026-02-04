@@ -501,11 +501,15 @@ class MonitorService:
             self.daily_triggers[symbol]["status"] = "order_failed"
             return False
 
-    def check_and_execute_stop_loss(self) -> List[str]:
+    def check_and_execute_stop_loss(self) -> List[dict]:
         """
         Check stop loss for all open positions.
 
-        Returns list of symbols that were stopped out.
+        Logic:
+        - Today's purchase: If -7% from today's entry → sell only today's qty (partial sell)
+        - All positions: If -7% from total avg price → sell all
+
+        Returns list of dicts with {symbol, type, qty} that were stopped out.
         """
         stopped = []
 
@@ -518,72 +522,105 @@ class MonitorService:
 
             current_price = price_data["last"]
 
-            if self.order_service.check_stop_loss(symbol, current_price):
+            # check_stop_loss returns dict with triggered, type, qty
+            stop_result = self.order_service.check_stop_loss(symbol, current_price)
+
+            if stop_result.get("triggered"):
+                stop_type = stop_result.get("type", "all")
+                sell_qty = stop_result.get("qty", 0)
+                change_pct = stop_result.get("change_pct", 0)
+
                 # 손절 시 현재가 - 3틱으로 주문 (체결 확보)
                 tick_size = self.client.get_tick_size(current_price)
                 sell_price = current_price - (tick_size * 3)
-                print(f"[{symbol}] STOP LOSS: 현재가 {current_price:,}원 → 주문가 {sell_price:,}원 (-3틱)")
+
+                if stop_type == "today":
+                    print(f"[{symbol}] STOP LOSS (today's buy): {change_pct:+.2f}% → sell {sell_qty}주 @ {sell_price:,}원")
+                else:
+                    print(f"[{symbol}] STOP LOSS (total): {change_pct:+.2f}% → sell ALL @ {sell_price:,}원")
 
                 result = self.order_service.execute_sell(
                     symbol=symbol,
                     price=sell_price,
-                    reason="stop_loss",
+                    reason=f"stop_loss_{stop_type}",
+                    sell_qty=sell_qty,
                 )
                 if result:
-                    stopped.append(symbol)
+                    stopped.append({
+                        "symbol": symbol,
+                        "type": stop_type,
+                        "qty": sell_qty,
+                    })
 
         return stopped
 
     def execute_close_logic(self) -> Dict[str, str]:
         """
-        Execute end-of-day logic for TODAY's entries only.
+        Execute end-of-day close logic for ALL positions.
 
-        Logic (only for stocks entered today via daily_triggers):
-        - If close > entry: Add 0.5 unit (pyramid)
-        - If close < entry: Sell all (cut loss)
-
-        Pre-existing positions (not in daily_triggers) are NOT affected.
+        Logic:
+        1. ALL positions: If close price is -7% from entry → sell all (stop loss at close)
+        2. TODAY's entries only (via daily_triggers):
+           - If close > entry: Add 0.5 unit (pyramid)
+           - If close < entry (0% 미만): Sell all (cut loss)
 
         Returns dict of {symbol: action_taken}
         """
         actions = {}
-
-        # Only process stocks that were entered TODAY
-        if not self.daily_triggers:
-            print("[CLOSE] No daily triggers - skipping close logic")
-            return actions
+        stop_loss_pct = self.trading_settings.STOP_LOSS_PCT  # Default 7%
 
         for pos in self.order_service.get_open_positions():
             symbol = pos["symbol"]
-
-            # Skip if not entered today
-            if symbol not in self.daily_triggers:
-                continue
-
             entry_price = pos.get("entry_price", 0)
+
+            if entry_price <= 0:
+                continue
 
             price_data = self.get_price(symbol)
             if not price_data:
                 continue
 
             current_price = price_data["last"]
+            change_pct = ((current_price / entry_price) - 1) * 100
+
+            # 1. ALL positions: Check -7% stop loss at close
+            if change_pct <= -stop_loss_pct:
+                tick_size = self.client.get_tick_size(current_price)
+                sell_price = current_price - (tick_size * 3)
+                print(f"[{symbol}] CLOSE STOP: {change_pct:+.2f}% <= -{stop_loss_pct}% - SELL @ {sell_price:,}원")
+
+                result = self.order_service.execute_sell(
+                    symbol=symbol,
+                    price=sell_price,
+                    reason="close_stop_loss",
+                )
+
+                if result:
+                    actions[symbol] = "close_stop_loss"
+                else:
+                    actions[symbol] = "close_stop_loss_failed"
+                continue  # Skip other logic for this symbol
+
+            # 2. TODAY's entries only: pyramid or cut loss
+            if symbol not in self.daily_triggers:
+                continue
 
             if current_price > entry_price:
                 # Profitable - pyramid
-                print(f"[{symbol}] Close {current_price:,}원 > Entry {entry_price:,}원 - PYRAMID")
+                print(f"[{symbol}] Close {current_price:,}원 > Entry {entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
 
                 # Find watchlist item for stop_loss_pct
                 watchlist_item = next(
                     (w for w in self.watchlist if w["ticker"] == symbol),
                     None
                 )
-                stop_loss_pct = watchlist_item.get("stop_loss_pct") if watchlist_item else None
+                custom_stop_loss_pct = watchlist_item.get("stop_loss_pct") if watchlist_item else None
 
                 result = self.order_service.execute_buy(
                     symbol=symbol,
                     target_price=current_price,
                     is_initial=False,
-                    stop_loss_pct=stop_loss_pct,
+                    stop_loss_pct=custom_stop_loss_pct,
                 )
 
                 if result:
@@ -592,10 +629,10 @@ class MonitorService:
                     actions[symbol] = "pyramid_failed"
 
             else:
-                # Loss - sell all
+                # Loss (0% 미만) - sell all
                 tick_size = self.client.get_tick_size(current_price)
                 sell_price = current_price - (tick_size * 3)
-                print(f"[{symbol}] Close {current_price:,}원 <= Entry {entry_price:,}원 - SELL @ {sell_price:,}원")
+                print(f"[{symbol}] Close {current_price:,}원 <= Entry {entry_price:,}원 ({change_pct:+.2f}%) - SELL @ {sell_price:,}원")
 
                 result = self.order_service.execute_sell(
                     symbol=symbol,
