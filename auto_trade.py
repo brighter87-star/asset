@@ -581,9 +581,11 @@ def run_trading_loop():
     # Monitoring intervals
     STATUS_INTERVAL = 3  # Show status every 3 seconds (clear & refresh)
     CHECK_INTERVAL = 1   # Check prices every 1 second
+    HOLDINGS_SYNC_INTERVAL = 60  # Sync holdings every 60 seconds (backup for WebSocket)
 
     last_date = None
     last_status_time = 0
+    last_holdings_sync_time = 0
 
     try:
         while True:
@@ -596,6 +598,19 @@ def run_trading_loop():
                 monitor.reset_daily_triggers()
                 monitor.load_watchlist()  # Reload watchlist
                 last_date = today
+
+            # Periodic holdings sync (backup for WebSocket failures)
+            if current_time - last_holdings_sync_time >= HOLDINGS_SYNC_INTERVAL:
+                try:
+                    conn = get_connection()
+                    sync_holdings_from_kiwoom(conn)
+                    conn.close()
+                    monitor.order_service.sync_positions_from_db(
+                        stop_loss_pct=monitor.trading_settings.STOP_LOSS_PCT
+                    )
+                    last_holdings_sync_time = current_time
+                except Exception as e:
+                    print(f"[SYNC] Periodic holdings sync failed: {e}")
 
             # Get current prices
             prices = price_source.get_prices()

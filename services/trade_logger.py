@@ -13,6 +13,24 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 
+# Stock name cache to avoid circular import
+_stock_name_cache: Dict[str, str] = {}
+
+
+def _get_stock_name(symbol: str) -> str:
+    """Get stock name from cache or kiwoom_service."""
+    if symbol in _stock_name_cache:
+        return _stock_name_cache[symbol]
+    try:
+        from services.kiwoom_service import get_stock_name
+        name = get_stock_name(symbol)
+        if name:
+            _stock_name_cache[symbol] = name
+            return name
+    except Exception:
+        pass
+    return symbol  # fallback to code
+
 # Load .env
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(env_path)
@@ -184,7 +202,7 @@ class TradeLogger:
             emoji = "\u2705" if side == "BUY" else "\U0001F4B0"
             tg_msg = (
                 f"{emoji} <b>주문체결</b>\n"
-                f"종목: <code>{symbol}</code>\n"
+                f"종목: {_get_stock_name(symbol)} ({symbol})\n"
                 f"구분: {side}\n"
                 f"수량: {quantity}주\n"
                 f"가격: {price:,}원\n"
@@ -198,7 +216,7 @@ class TradeLogger:
             # Telegram notification
             tg_msg = (
                 f"\u274C <b>주문실패</b>\n"
-                f"종목: <code>{symbol}</code>\n"
+                f"종목: {_get_stock_name(symbol)} ({symbol})\n"
                 f"구분: {side}\n"
                 f"수량: {quantity}주\n"
                 f"가격: {price:,}원\n"
@@ -266,7 +284,7 @@ class TradeLogger:
         # Telegram notification
         tg_msg = (
             f"\U0001F6A8 <b>손절 발동</b>\n"
-            f"종목: <code>{symbol}</code>\n"
+            f"종목: {_get_stock_name(symbol)} ({symbol})\n"
             f"진입가: {entry_price:,}원\n"
             f"현재가: {current_price:,}원\n"
             f"손실률: {change_pct:+.2f}%\n"
@@ -330,7 +348,7 @@ class TradeLogger:
         if action == "OPEN":
             tg_msg = (
                 f"\U0001F4C8 <b>포지션 오픈</b>\n"
-                f"종목: <code>{symbol}</code>\n"
+                f"종목: {_get_stock_name(symbol)} ({symbol})\n"
                 f"수량: {quantity}주\n"
                 f"평균가: {avg_price:,}원"
             )
@@ -339,7 +357,7 @@ class TradeLogger:
             pnl_emoji = "\U0001F4B0" if realized_pnl and realized_pnl > 0 else "\U0001F4C9"
             tg_msg = (
                 f"{pnl_emoji} <b>포지션 청산</b>\n"
-                f"종목: <code>{symbol}</code>\n"
+                f"종목: {_get_stock_name(symbol)} ({symbol})\n"
                 f"수량: {quantity}주\n"
                 f"청산가: {avg_price:,}원\n"
                 f"실현손익: {realized_pnl:,}원" if realized_pnl else ""
@@ -378,7 +396,7 @@ class TradeLogger:
         # Telegram notification
         tg_msg = (
             f"\u26A0\uFE0F <b>신용한도 초과 종목</b>\n"
-            f"종목: <code>{symbol}</code>\n"
+            f"종목: {_get_stock_name(symbol)} ({symbol})\n"
             f"수량: {quantity}주\n"
             f"가격: {price:,}원\n"
             f"오류: {error_msg}\n"
@@ -420,7 +438,7 @@ class TradeLogger:
         # Telegram notification
         tg_msg = (
             f"\u26A0\uFE0F <b>주식비중 한도 초과</b>\n"
-            f"종목: <code>{symbol}</code>\n"
+            f"종목: {_get_stock_name(symbol)} ({symbol})\n"
             f"주문수량: {quantity}주\n"
             f"주문가격: {price:,}원\n"
             f"순자산: {net_assets:,}원\n"
