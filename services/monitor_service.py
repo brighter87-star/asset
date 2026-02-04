@@ -359,13 +359,19 @@ class MonitorService:
 
         return pre_market_start <= current_time < pre_market_end
 
-    def is_breakout_entry_allowed(self, exchange: str = "KRX") -> bool:
+    def is_breakout_entry_allowed(self) -> bool:
         """
         Check if breakout entry is allowed at current time.
 
-        Breakout is meaningful only during specific windows:
-        - KRX: 9:00-9:10 (morning rush) and 14:30-15:30 (afternoon)
-        - NXT: 8:00-8:05 (pre-market rush)
+        In Korea, most stocks trade on both KRX and NXT markets:
+        - KRX: 9:00 ~ 15:30
+        - NXT: 8:00 ~ 20:00
+
+        Breakout is meaningful only during market open/close rushes:
+        - 8:00 ~ 8:05 (NXT morning open)
+        - 9:00 ~ 9:10 (KRX morning open)
+        - 14:30 ~ 15:30 (KRX afternoon close)
+        - 19:30 ~ 20:00 (NXT evening close)
 
         Outside these windows, watchlist is monitored but no buy execution.
         """
@@ -376,22 +382,28 @@ class MonitorService:
 
         current_time = now_kst.time()
 
-        if exchange == "NXT":
-            # NXT: 8:00 ~ 8:05 only
-            nxt_start = time(8, 0)
-            nxt_end = time(8, 5)
-            return nxt_start <= current_time < nxt_end
-        else:
-            # KRX: 9:00~9:10 or 14:30~15:30
-            krx_morning_start = time(9, 0)
-            krx_morning_end = time(9, 10)
-            krx_afternoon_start = time(14, 30)
-            krx_afternoon_end = time(15, 30)
+        # NXT morning open: 8:00 ~ 8:05
+        nxt_morning_start = time(8, 0)
+        nxt_morning_end = time(8, 5)
 
-            in_morning = krx_morning_start <= current_time < krx_morning_end
-            in_afternoon = krx_afternoon_start <= current_time < krx_afternoon_end
+        # KRX morning open: 9:00 ~ 9:10
+        krx_morning_start = time(9, 0)
+        krx_morning_end = time(9, 10)
 
-            return in_morning or in_afternoon
+        # KRX afternoon close: 14:30 ~ 15:30
+        krx_afternoon_start = time(14, 30)
+        krx_afternoon_end = time(15, 30)
+
+        # NXT evening close: 19:30 ~ 20:00
+        nxt_evening_start = time(19, 30)
+        nxt_evening_end = time(20, 0)
+
+        in_nxt_morning = nxt_morning_start <= current_time < nxt_morning_end
+        in_krx_morning = krx_morning_start <= current_time < krx_morning_end
+        in_krx_afternoon = krx_afternoon_start <= current_time < krx_afternoon_end
+        in_nxt_evening = nxt_evening_start <= current_time < nxt_evening_end
+
+        return in_nxt_morning or in_krx_morning or in_krx_afternoon or in_nxt_evening
 
     def check_pre_market_reload(self) -> bool:
         """
@@ -423,7 +435,8 @@ class MonitorService:
         Check if breakout entry condition is met.
 
         Returns True if:
-        - Within valid breakout time window (KRX: 9:00-9:10, 14:30-15:30 / NXT: 8:00-8:05)
+        - Within valid breakout time window:
+          8:00-8:05 (NXT), 9:00-9:10 (KRX), 14:30-15:30 (KRX), 19:30-20:00 (NXT)
         - Current price >= target price
         - Not already triggered today
         - Not already have position
@@ -431,10 +444,9 @@ class MonitorService:
         """
         symbol = item["ticker"]
         target_price = item["target_price"]
-        exchange = item.get("exchange", "KRX")  # Default to KRX
 
         # Check if we're in valid breakout entry time window
-        if not self.is_breakout_entry_allowed(exchange):
+        if not self.is_breakout_entry_allowed():
             return False
 
         # Already triggered today?
