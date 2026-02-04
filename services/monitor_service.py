@@ -586,7 +586,7 @@ class MonitorService:
     def get_price(self, symbol: str) -> Optional[dict]:
         """Get current price for symbol (auto-detects KRX/NXT based on time, with fallback)."""
         try:
-            # Use NXT market during NXT-only hours (8:00-9:00, 15:40-20:00)
+            # Use NXT market during NXT-only hours (8:00-8:50, 15:40-20:00)
             # Falls back to KRX if NXT fails (some stocks don't support NXT)
             market_type = "NXT" if self.is_nxt_only_hours() else "KRX"
             return self.client.get_stock_price_with_fallback(symbol, market_type=market_type)
