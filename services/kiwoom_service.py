@@ -1869,10 +1869,12 @@ class KiwoomTradingClient(KiwoomAPIClient):
 
         # NXT 조회 실패 또는 가격이 0인 경우 KRX로 폴백
         if market_type == "NXT" and result.get("last", 0) == 0:
+            print(f"[DEBUG] {stock_code}: NXT returned 0, falling back to KRX")
             result = self.get_stock_price(stock_code, market_type="KRX")
 
         # KRX도 0인 경우 (장 시작 전) holdings DB에서 캐시된 가격 사용
         if result.get("last", 0) == 0:
+            print(f"[DEBUG] {stock_code}: Both NXT and KRX returned 0, using cache")
             try:
                 from db.connection import get_connection
                 conn = get_connection()
@@ -1886,6 +1888,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
                     if row and row[0]:
                         result["last"] = int(row[0])
                         result["market"] = "CACHE"
+                        print(f"[DEBUG] {stock_code}: Using cached price {row[0]}")
                 conn.close()
             except Exception:
                 pass
