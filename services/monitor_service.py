@@ -434,14 +434,14 @@ class MonitorService:
         Check if breakout entry is allowed at current time.
 
         In Korea, most stocks trade on both KRX and NXT markets:
-        - KRX: 9:00 ~ 15:30
+        - KRX: 9:00 ~ 15:30 (15:20~15:30 is 동시호가, no execution)
         - NXT: 8:00 ~ 20:00
 
-        Breakout is meaningful only during market open/close rushes:
+        Breakout windows for initial entry (0.5 unit):
         - 8:00 ~ 8:05 (NXT morning open)
         - 9:00 ~ 9:10 (KRX morning open)
-        - 14:30 ~ 15:30 (KRX afternoon close)
-        - 19:30 ~ 20:00 (NXT evening close)
+        - 14:30 ~ 15:20 (KRX afternoon, before 동시호가)
+        - 19:30 ~ 20:00 (NXT evening - full 1 unit if first entry)
 
         Outside these windows, watchlist is monitored but no buy execution.
         """
@@ -460,9 +460,9 @@ class MonitorService:
         krx_morning_start = time(9, 0)
         krx_morning_end = time(9, 10)
 
-        # KRX afternoon close: 14:30 ~ 15:30
+        # KRX afternoon: 14:30 ~ 15:20 (before 동시호가)
         krx_afternoon_start = time(14, 30)
-        krx_afternoon_end = time(15, 30)
+        krx_afternoon_end = time(15, 20)
 
         # NXT evening close: 19:30 ~ 20:00
         nxt_evening_start = time(19, 30)
@@ -474,6 +474,26 @@ class MonitorService:
         in_nxt_evening = nxt_evening_start <= current_time < nxt_evening_end
 
         return in_nxt_morning or in_krx_morning or in_krx_afternoon or in_nxt_evening
+
+    def is_nxt_evening_session(self) -> bool:
+        """Check if we're in NXT evening session (19:30 ~ 20:00)."""
+        now_kst = self.get_current_time_kst()
+
+        if now_kst.weekday() >= 5:
+            return False
+
+        current_time = now_kst.time()
+        return time(19, 30) <= current_time < time(20, 0)
+
+    def is_before_krx_simultaneous_auction(self) -> bool:
+        """Check if we're before KRX 동시호가 (before 15:20)."""
+        now_kst = self.get_current_time_kst()
+
+        if now_kst.weekday() >= 5:
+            return True  # Not a trading day, so not relevant
+
+        current_time = now_kst.time()
+        return current_time < time(15, 20)
 
     def check_pre_market_reload(self) -> bool:
         """
@@ -589,11 +609,15 @@ class MonitorService:
         target_price = item["target_price"]
         stop_loss_pct = item.get("stop_loss_pct")
 
+        # NXT 저녁 (19:30-20:00)에 첫 진입이면 full 1 unit 매수
+        is_nxt_evening_first_entry = self.is_nxt_evening_session()
+
         # 주문 시도 전에 먼저 daily_triggers에 등록 (중복 주문 방지)
         self.daily_triggers[symbol] = {
             "entry_type": "gap_up" if is_gap_up else "breakout",
             "entry_time": datetime.now().isoformat(),
             "status": "pending",
+            "nxt_evening_entry": is_nxt_evening_first_entry,
         }
         self._save_daily_triggers()  # Persist to file
 
@@ -608,6 +632,7 @@ class MonitorService:
         else:
             entry_price = target_price
 
+        # First buy (0.5 unit)
         result = self.order_service.execute_buy(
             symbol=symbol,
             target_price=entry_price,
@@ -621,6 +646,17 @@ class MonitorService:
                 "entry_price": entry_price,
             })
             self._save_daily_triggers()  # Persist to file
+
+            # NXT 저녁 첫 진입이면 바로 피라미딩 (full 1 unit)
+            if is_nxt_evening_first_entry:
+                print(f"[{symbol}] NXT evening first entry - adding pyramid immediately")
+                self.order_service.execute_buy(
+                    symbol=symbol,
+                    target_price=entry_price,
+                    is_initial=False,  # pyramid
+                    stop_loss_pct=stop_loss_pct,
+                )
+
             # Mark as purchased to prevent duplicate buys
             # User must remove from watchlist.csv to re-enable buying
             stock_name = item.get("name", "") or get_stock_name(symbol)
@@ -638,9 +674,14 @@ class MonitorService:
         Logic:
         - Today's purchase: If -7% from today's entry → sell only today's qty (partial sell)
         - All positions: If -7% from total avg price → sell all
+        - Only runs before KRX 동시호가 (before 15:20) or during NXT evening
 
         Returns list of dicts with {symbol, type, qty} that were stopped out.
         """
+        # KRX 동시호가 시간(15:20-15:30)에는 손절 안함
+        if not self.is_before_krx_simultaneous_auction() and not self.is_nxt_evening_session():
+            return []
+
         stopped = []
 
         for pos in self.order_service.get_open_positions():
@@ -833,8 +874,9 @@ class MonitorService:
         stopped = self.check_and_execute_stop_loss()
         result["stop_losses"] = stopped
 
-        # Execute close logic near market close (KRX 15:25-15:30 OR NXT 19:55-20:00)
-        if self.is_near_market_close(5) or self.is_near_nxt_close(5):
+        # Execute close logic near NXT close only (19:55-20:00)
+        # KRX close (15:20-15:30) is 동시호가, skip pyramid there
+        if self.is_near_nxt_close(5):
             result["close_actions"] = self.execute_close_logic()
 
         return result

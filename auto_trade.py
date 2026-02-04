@@ -397,17 +397,12 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     breakout_active = monitor.is_breakout_entry_allowed()
     active_marker = " [ACTIVE]" if breakout_active else ""
 
-    # Check close logic timing
-    near_krx_close = monitor.is_near_market_close(5)
+    # Check close logic timing (only NXT close for pyramid)
     near_nxt_close = monitor.is_near_nxt_close(5)
-    close_marker = ""
-    if near_krx_close:
-        close_marker = " [KRX CLOSE]"
-    elif near_nxt_close:
-        close_marker = " [NXT CLOSE]"
+    close_marker = " [NXT PYRAMID]" if near_nxt_close else ""
 
     print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring{close_marker}")
-    print(f"Breakout Windows: 8:00-8:05, 9:00-9:10, 14:30-15:30, 19:30-20:00{active_marker}")
+    print(f"Breakout: 8:00-8:05, 9:00-9:10, 14:30-15:20 | Pyramid: 19:55-20:00{active_marker}")
     print("=" * 78)
 
     # Header
