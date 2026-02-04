@@ -258,11 +258,16 @@ class MonitorService:
                     "target_price": int(target_price),
                     "stop_loss_pct": None,
                     "name": name,
+                    "exchange": "KRX",  # Default exchange
                 }
 
                 # Optional custom stop loss
                 if "stop_loss_pct" in row and not pd.isna(row["stop_loss_pct"]):
                     item["stop_loss_pct"] = float(row["stop_loss_pct"])
+
+                # Optional exchange (KRX or NXT)
+                if "exchange" in row and not pd.isna(row["exchange"]):
+                    item["exchange"] = str(row["exchange"]).strip().upper()
 
                 watchlist.append(item)
 
@@ -354,6 +359,40 @@ class MonitorService:
 
         return pre_market_start <= current_time < pre_market_end
 
+    def is_breakout_entry_allowed(self, exchange: str = "KRX") -> bool:
+        """
+        Check if breakout entry is allowed at current time.
+
+        Breakout is meaningful only during specific windows:
+        - KRX: 9:00-9:10 (morning rush) and 14:30-15:30 (afternoon)
+        - NXT: 8:00-8:05 (pre-market rush)
+
+        Outside these windows, watchlist is monitored but no buy execution.
+        """
+        now_kst = self.get_current_time_kst()
+
+        if now_kst.weekday() >= 5:
+            return False
+
+        current_time = now_kst.time()
+
+        if exchange == "NXT":
+            # NXT: 8:00 ~ 8:05 only
+            nxt_start = time(8, 0)
+            nxt_end = time(8, 5)
+            return nxt_start <= current_time < nxt_end
+        else:
+            # KRX: 9:00~9:10 or 14:30~15:30
+            krx_morning_start = time(9, 0)
+            krx_morning_end = time(9, 10)
+            krx_afternoon_start = time(14, 30)
+            krx_afternoon_end = time(15, 30)
+
+            in_morning = krx_morning_start <= current_time < krx_morning_end
+            in_afternoon = krx_afternoon_start <= current_time < krx_afternoon_end
+
+            return in_morning or in_afternoon
+
     def check_pre_market_reload(self) -> bool:
         """
         Check and perform pre-market reload (5 min before open).
@@ -384,6 +423,7 @@ class MonitorService:
         Check if breakout entry condition is met.
 
         Returns True if:
+        - Within valid breakout time window (KRX: 9:00-9:10, 14:30-15:30 / NXT: 8:00-8:05)
         - Current price >= target price
         - Not already triggered today
         - Not already have position
@@ -391,6 +431,11 @@ class MonitorService:
         """
         symbol = item["ticker"]
         target_price = item["target_price"]
+        exchange = item.get("exchange", "KRX")  # Default to KRX
+
+        # Check if we're in valid breakout entry time window
+        if not self.is_breakout_entry_allowed(exchange):
+            return False
 
         # Already triggered today?
         if symbol in self.daily_triggers:
