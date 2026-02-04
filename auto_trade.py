@@ -504,6 +504,61 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
         print("=" * 66)
 
+    # Show all holdings with stop loss status (exclude watchlist items already shown)
+    watchlist_tickers = {item['ticker'] for item in monitor.watchlist}
+    other_holdings = [
+        pos for pos in positions.values()
+        if pos['symbol'] not in watchlist_tickers
+    ]
+
+    if other_holdings:
+        print(f"\n[Holdings Stop Loss Monitor]")
+        print(f"{'CODE':<8} {'NAME':<12} {'ENTRY':>10} {'CURRENT':>10} {'P&L':>8} {'STOP':>10} {'STATUS':>8}")
+        print("-" * 70)
+
+        for pos in other_holdings:
+            symbol = pos['symbol']
+            name = pos.get('name', '') or get_stock_name(symbol)
+            if get_display_width(name) > 10:
+                truncated = ""
+                for c in name:
+                    if get_display_width(truncated + c) > 10:
+                        break
+                    truncated += c
+                name = truncated
+            name_display = pad_korean(name, 12, 'left')
+
+            entry = pos.get('entry_price', 0)
+            stop_loss = pos.get('stop_loss_price', 0)
+
+            # Get current price
+            price_data = prices.get(symbol, {})
+            current = price_data.get('last', 0)
+            if current <= 0:
+                current = holdings_prices.get(symbol, {}).get('last', 0)
+
+            if entry > 0 and current > 0:
+                pnl_pct = ((current - entry) / entry) * 100
+                pnl_str = f"{pnl_pct:+.1f}%"
+
+                if stop_loss > 0:
+                    if current <= stop_loss:
+                        status = "STOP!"
+                    elif pnl_pct <= -5:
+                        status = "WARN"
+                    else:
+                        status = "OK"
+                    stop_str = f"{stop_loss:,}"
+                else:
+                    status = "NO SL"
+                    stop_str = "---"
+
+                print(f"{symbol:<8} {name_display} {entry:>10,} {current:>10,} {pnl_str:>8} {stop_str:>10} {status:>8}")
+            else:
+                print(f"{symbol:<8} {name_display} {'---':>10} {'---':>10} {'---':>8} {'---':>10} {'---':>8}")
+
+        print("=" * 70)
+
 
 def run_trading_loop():
     """Main trading loop with live price monitoring."""
