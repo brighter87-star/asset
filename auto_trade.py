@@ -393,7 +393,12 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
     positions = {pos['symbol']: pos for pos in monitor.order_service.get_open_positions()}
 
+    # Check if currently in breakout window
+    breakout_active = monitor.is_breakout_entry_allowed()
+    active_marker = " [ACTIVE]" if breakout_active else ""
+
     print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring")
+    print(f"Breakout Windows: 8:00-8:05, 9:00-9:10, 14:30-15:30, 19:30-20:00{active_marker}")
     print("=" * 78)
 
     # Header
