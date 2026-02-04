@@ -2,6 +2,7 @@
 Monitor service for price monitoring and trading strategy execution.
 """
 
+import json
 import os
 import pandas as pd
 from datetime import datetime, time
@@ -18,6 +19,7 @@ WATCHLIST_DIR = Path(__file__).resolve().parent.parent
 WATCHLIST_CSV = WATCHLIST_DIR / "watchlist.csv"
 WATCHLIST_XLSX = WATCHLIST_DIR / "watchlist.xlsx"
 SETTINGS_CSV = WATCHLIST_DIR / "settings.csv"
+PURCHASED_STOCKS_FILE = WATCHLIST_DIR / "purchased_stocks.json"
 
 # Korea timezone
 KST = ZoneInfo("Asia/Seoul")
@@ -62,6 +64,51 @@ class MonitorService:
         self.daily_triggers: Dict[str, dict] = {}  # Track triggered entries today
         self._file_mtime: float = 0  # File modification time
         self._pre_market_reloaded: bool = False  # Track pre-market reload
+        self.purchased_stocks: Dict[str, dict] = {}  # Track purchased stocks
+        self._load_purchased_stocks()
+
+    def _load_purchased_stocks(self):
+        """Load purchased stocks from JSON file."""
+        try:
+            if PURCHASED_STOCKS_FILE.exists():
+                with open(PURCHASED_STOCKS_FILE, 'r', encoding='utf-8') as f:
+                    self.purchased_stocks = json.load(f)
+                print(f"[INFO] Loaded {len(self.purchased_stocks)} purchased stocks from file")
+        except Exception as e:
+            print(f"[WARNING] Failed to load purchased stocks: {e}")
+            self.purchased_stocks = {}
+
+    def _save_purchased_stocks(self):
+        """Save purchased stocks to JSON file."""
+        try:
+            with open(PURCHASED_STOCKS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.purchased_stocks, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[WARNING] Failed to save purchased stocks: {e}")
+
+    def mark_as_purchased(self, symbol: str, name: str = "", price: int = 0):
+        """
+        Mark a stock as purchased to prevent duplicate buys.
+        User must manually remove from watchlist.csv to enable re-buying.
+        """
+        self.purchased_stocks[symbol] = {
+            "name": name or get_stock_name(symbol),
+            "purchased_at": datetime.now(KST).isoformat(),
+            "price": price,
+        }
+        self._save_purchased_stocks()
+        print(f"[INFO] Marked {symbol} as purchased (remove from watchlist.csv to re-enable)")
+
+    def is_already_purchased(self, symbol: str) -> bool:
+        """Check if stock was already purchased."""
+        return symbol in self.purchased_stocks
+
+    def clear_purchased_stock(self, symbol: str):
+        """Remove stock from purchased list (called when removed from watchlist)."""
+        if symbol in self.purchased_stocks:
+            del self.purchased_stocks[symbol]
+            self._save_purchased_stocks()
+            print(f"[INFO] Cleared {symbol} from purchased stocks")
 
     def _get_watchlist_file(self) -> Optional[Path]:
         """Get watchlist file path (CSV priority)."""
@@ -221,6 +268,19 @@ class MonitorService:
 
             self.watchlist = watchlist
             self._file_mtime = self._get_file_mtime()
+
+            # Clean up purchased_stocks: remove stocks no longer in watchlist
+            watchlist_tickers = {item["ticker"] for item in watchlist}
+            removed_from_purchased = []
+            for ticker in list(self.purchased_stocks.keys()):
+                if ticker not in watchlist_tickers:
+                    removed_from_purchased.append(ticker)
+                    del self.purchased_stocks[ticker]
+
+            if removed_from_purchased:
+                self._save_purchased_stocks()
+                print(f"[INFO] Cleared {len(removed_from_purchased)} stocks from purchased list (removed from watchlist)")
+
             print(f"[INFO] Loaded {len(watchlist)} items from watchlist")
             return watchlist
 
@@ -327,12 +387,17 @@ class MonitorService:
         - Current price >= target price
         - Not already triggered today
         - Not already have position
+        - Not already purchased (user must remove from watchlist.csv to re-enable)
         """
         symbol = item["ticker"]
         target_price = item["target_price"]
 
         # Already triggered today?
         if symbol in self.daily_triggers:
+            return False
+
+        # Already purchased? (user must manually remove from watchlist.csv)
+        if self.is_already_purchased(symbol):
             return False
 
         # Already have position?
@@ -362,11 +427,16 @@ class MonitorService:
         - Open price > target price
         - Not already triggered today
         - Not already have position
+        - Not already purchased (user must remove from watchlist.csv to re-enable)
         """
         symbol = item["ticker"]
         target_price = item["target_price"]
 
         if symbol in self.daily_triggers:
+            return False
+
+        # Already purchased? (user must manually remove from watchlist.csv)
+        if self.is_already_purchased(symbol):
             return False
 
         if self.order_service.has_position(symbol):
@@ -422,6 +492,10 @@ class MonitorService:
                 "status": "success",
                 "entry_price": entry_price,
             })
+            # Mark as purchased to prevent duplicate buys
+            # User must remove from watchlist.csv to re-enable buying
+            stock_name = item.get("name", "") or get_stock_name(symbol)
+            self.mark_as_purchased(symbol, stock_name, entry_price)
             return True
         else:
             self.daily_triggers[symbol]["status"] = "order_failed"

@@ -25,7 +25,7 @@ class KiwoomAPIClient:
     def get_access_token(self) -> str:
         """
         Get access token for API authentication.
-        
+
         Returns:
             Access token string
         """
@@ -43,9 +43,70 @@ class KiwoomAPIClient:
             response = requests.post(url, json=data)
             response.raise_for_status()
             self.access_token = response.json()["token"]
+            print(f"[TOKEN] New access token acquired")
             return self.access_token
         except Exception as e:
             print(f"✗ Failed to get access token: {e}")
+            raise
+
+    def refresh_token(self) -> str:
+        """
+        Force refresh the access token.
+
+        Returns:
+            New access token string
+        """
+        self.access_token = None
+        return self.get_access_token()
+
+    def _api_request(self, method: str, url: str, headers: dict, json: dict = None, timeout: int = 10, retry_on_token_error: bool = True) -> requests.Response:
+        """
+        Make API request with automatic token refresh on expiry.
+
+        Args:
+            method: HTTP method (GET, POST)
+            url: API URL
+            headers: Request headers
+            json: Request body
+            timeout: Request timeout
+            retry_on_token_error: Whether to retry on token error
+
+        Returns:
+            Response object
+        """
+        try:
+            if method.upper() == "GET":
+                response = requests.get(url, headers=headers, timeout=timeout)
+            else:
+                response = requests.post(url, headers=headers, json=json, timeout=timeout)
+
+            # Check for token expiry error in response
+            if response.status_code == 200:
+                result = response.json()
+                return_code = result.get("return_code")
+                return_msg = result.get("return_msg", "")
+
+                # Token expired: [8005:Token이 유효하지 않습니다]
+                if return_code == 8005 or "8005" in str(return_msg) or "Token" in return_msg and "유효" in return_msg:
+                    if retry_on_token_error:
+                        print(f"[TOKEN] Token expired, refreshing...")
+                        new_token = self.refresh_token()
+                        headers['Authorization'] = f'Bearer {new_token}'
+                        return self._api_request(method, url, headers, json, timeout, retry_on_token_error=False)
+                    else:
+                        raise Exception(f"Token refresh failed: {return_msg}")
+
+            response.raise_for_status()
+            return response
+
+        except requests.exceptions.RequestException as e:
+            # Check if error message contains token expiry
+            error_str = str(e)
+            if retry_on_token_error and ("8005" in error_str or "Token" in error_str):
+                print(f"[TOKEN] Token error detected, refreshing...")
+                new_token = self.refresh_token()
+                headers['Authorization'] = f'Bearer {new_token}'
+                return self._api_request(method, url, headers, json, timeout, retry_on_token_error=False)
             raise
 
     def get_account_trade_history(self, start_date: str = None) -> List[Dict[str, Any]]:
@@ -1642,12 +1703,13 @@ class KiwoomTradingClient(KiwoomAPIClient):
         else:
             return 1000
 
-    def get_stock_price(self, stock_code: str) -> Dict[str, Any]:
+    def get_stock_price(self, stock_code: str, _retry: bool = True) -> Dict[str, Any]:
         """
         개별 종목 현재가 조회 (REST API)
 
         Args:
             stock_code: 종목코드 (6자리)
+            _retry: 토큰 만료 시 재시도 여부 (내부용)
 
         Returns:
             dict: {
@@ -1682,8 +1744,20 @@ class KiwoomTradingClient(KiwoomAPIClient):
             response.raise_for_status()
             result = response.json()
 
-            if result.get("return_code") not in (0, None):
-                raise Exception(f"API error: {result.get('return_msg', 'Unknown')}")
+            return_code = result.get("return_code")
+            return_msg = result.get("return_msg", "")
+
+            # Token expired error: retry with new token
+            if return_code == 8005 or "8005" in str(return_msg) or ("Token" in return_msg and "유효" in return_msg):
+                if _retry:
+                    print(f"[TOKEN] Token expired, refreshing and retrying...")
+                    self.refresh_token()
+                    return self.get_stock_price(stock_code, _retry=False)
+                else:
+                    raise Exception(f"API error: {return_msg}")
+
+            if return_code not in (0, None):
+                raise Exception(f"API error: {return_msg}")
 
             def parse_price(val):
                 """가격 문자열 파싱 (+/-부호 제거)"""
