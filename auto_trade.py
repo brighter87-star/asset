@@ -397,7 +397,16 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     breakout_active = monitor.is_breakout_entry_allowed()
     active_marker = " [ACTIVE]" if breakout_active else ""
 
-    print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring")
+    # Check close logic timing
+    near_krx_close = monitor.is_near_market_close(5)
+    near_nxt_close = monitor.is_near_nxt_close(5)
+    close_marker = ""
+    if near_krx_close:
+        close_marker = " [KRX CLOSE]"
+    elif near_nxt_close:
+        close_marker = " [NXT CLOSE]"
+
+    print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring{close_marker}")
     print(f"Breakout Windows: 8:00-8:05, 9:00-9:10, 14:30-15:30, 19:30-20:00{active_marker}")
     print("=" * 78)
 
@@ -774,10 +783,8 @@ def run_trading_loop():
                 show_live_status(monitor, prices, today_trades, holdings_prices)
                 last_status_time = current_time
 
-            # Check market status
-            status = monitor.get_status()
-
-            if status["market_open"]:
+            # Check market status (KRX or NXT active)
+            if monitor.is_any_market_active():
                 # Run monitoring cycle
                 result = monitor.run_monitoring_cycle()
 

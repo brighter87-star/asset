@@ -354,7 +354,7 @@ class MonitorService:
         return market_open <= current_time < market_close
 
     def is_near_market_close(self, minutes: int = 5) -> bool:
-        """Check if we're within N minutes of market close."""
+        """Check if we're within N minutes of KRX market close (15:30)."""
         now_kst = self.get_current_time_kst()
         market_close = time(15, 30)
 
@@ -370,6 +370,41 @@ class MonitorService:
         minutes_until_close = close_minutes - current_minutes
 
         return 0 < minutes_until_close <= minutes
+
+    def is_nxt_session(self) -> bool:
+        """Check if NXT market is open (8:00 - 20:00 KST)."""
+        now_kst = self.get_current_time_kst()
+
+        if now_kst.weekday() >= 5:
+            return False
+
+        current_time = now_kst.time()
+        nxt_open = time(8, 0)
+        nxt_close = time(20, 0)
+
+        return nxt_open <= current_time < nxt_close
+
+    def is_near_nxt_close(self, minutes: int = 5) -> bool:
+        """Check if we're within N minutes of NXT market close (20:00)."""
+        now_kst = self.get_current_time_kst()
+        nxt_close = time(20, 0)
+
+        if now_kst.weekday() >= 5:
+            return False
+
+        current_time = now_kst.time()
+
+        # Calculate minutes until NXT close
+        close_minutes = nxt_close.hour * 60 + nxt_close.minute
+        current_minutes = current_time.hour * 60 + current_time.minute
+
+        minutes_until_close = close_minutes - current_minutes
+
+        return 0 < minutes_until_close <= minutes
+
+    def is_any_market_active(self) -> bool:
+        """Check if any trading is possible (KRX or NXT breakout windows)."""
+        return self.is_market_open() or self.is_breakout_entry_allowed()
 
     def is_market_open_time(self) -> bool:
         """Check if it's exactly market open time (within first minute)."""
@@ -771,7 +806,8 @@ class MonitorService:
         if self.check_pre_market_reload():
             result["reloaded"] = True
 
-        if not self.is_market_open():
+        # Check if any market is active (KRX or NXT breakout windows)
+        if not self.is_any_market_active():
             return result
 
         # Check market open gap-up entries
@@ -797,8 +833,8 @@ class MonitorService:
         stopped = self.check_and_execute_stop_loss()
         result["stop_losses"] = stopped
 
-        # Execute close logic near market close
-        if self.is_near_market_close(5):
+        # Execute close logic near market close (KRX 15:25-15:30 OR NXT 19:55-20:00)
+        if self.is_near_market_close(5) or self.is_near_nxt_close(5):
             result["close_actions"] = self.execute_close_logic()
 
         return result
@@ -808,7 +844,10 @@ class MonitorService:
         return {
             "current_time_kst": self.get_current_time_kst().isoformat(),
             "market_open": self.is_market_open(),
-            "near_close": self.is_near_market_close(5),
+            "nxt_session": self.is_nxt_session(),
+            "near_krx_close": self.is_near_market_close(5),
+            "near_nxt_close": self.is_near_nxt_close(5),
+            "any_market_active": self.is_any_market_active(),
             "watchlist_count": len(self.watchlist),
             "open_positions": len(self.order_service.get_open_positions()),
             "daily_triggers": len(self.daily_triggers),
