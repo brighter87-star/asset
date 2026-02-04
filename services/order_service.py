@@ -418,6 +418,7 @@ class OrderService:
                 order_no=result.get("order_no", ""),
                 order_time=result.get("order_time", ""),
                 message=f"{order_type_str} - {result.get('message', '')}",
+                reason=reason,
             )
 
             # Update position tracking
@@ -508,6 +509,8 @@ class OrderService:
                 order_no=result.get("order_no", ""),
                 order_time=result.get("order_time", ""),
                 message=f"{sell_type}: {result.get('message', '')}",
+                reason=reason,
+                pnl=pnl,
             )
 
             if is_partial:

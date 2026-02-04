@@ -354,6 +354,32 @@ def pad_korean(s: str, width: int, align: str = 'left') -> str:
         return ' ' * left_pad + s + ' ' * right_pad
 
 
+def get_display_width(s: str) -> int:
+    """Calculate display width (Korean=2, others=1)."""
+    width = 0
+    for c in s:
+        if '\uac00' <= c <= '\ud7a3' or '\u3130' <= c <= '\u318f':  # Korean
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def pad_korean(s: str, width: int, align: str = 'left') -> str:
+    """Pad string considering Korean character width."""
+    display_width = get_display_width(s)
+    padding = width - display_width
+    if padding <= 0:
+        return s
+    if align == 'left':
+        return s + ' ' * padding
+    elif align == 'right':
+        return ' ' * padding + s
+    else:  # center
+        left = padding // 2
+        return ' ' * left + s + ' ' * (padding - left)
+
+
 def show_live_status(monitor: MonitorService, prices: dict, today_trades: list = None, holdings_prices: dict = None, clear: bool = True):
     """Display live status with real-time prices (watchlist only)."""
     import os
@@ -379,7 +405,15 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
         target = item['target_price']
 
         name = item.get('name', '') or get_stock_name(ticker)
-        name_display = name[:10] if len(name) > 10 else name
+        # Truncate name if display width > 10
+        if get_display_width(name) > 10:
+            truncated = ""
+            for c in name:
+                if get_display_width(truncated + c) > 10:
+                    break
+                truncated += c
+            name = truncated
+        name_display = pad_korean(name, 12, 'left')
 
         price_data = prices.get(ticker, {})
         current = price_data.get('last', 0)
@@ -415,11 +449,55 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
                 else:
                     status_str = "WAIT"
 
-            print(f"{ticker:<8} {name_display:<12} {target:>12,} {current:>12,} {pnl_str:>10} {status_str:>10}")
+            print(f"{ticker:<8} {name_display} {target:>12,} {current:>12,} {pnl_str:>10} {status_str:>10}")
         else:
-            print(f"{ticker:<8} {name_display:<12} {target:>12,} {'---':>12} {'---':>10} {'LOADING':>10}")
+            print(f"{ticker:<8} {name_display} {target:>12,} {'---':>12} {'---':>10} {'LOADING':>10}")
 
     print("=" * 78)
+
+    # Show today's purchases section
+    today_positions = [
+        pos for pos in positions.values()
+        if pos.get('today_qty', 0) > 0
+    ]
+
+    if today_positions:
+        print(f"\n[Today's Purchases]")
+        print(f"{'CODE':<8} {'NAME':<12} {'QTY':>8} {'ENTRY':>12} {'CURRENT':>12} {'P&L':>10}")
+        print("-" * 66)
+
+        for pos in today_positions:
+            symbol = pos['symbol']
+            name = pos.get('name', '') or get_stock_name(symbol)
+            if get_display_width(name) > 10:
+                truncated = ""
+                for c in name:
+                    if get_display_width(truncated + c) > 10:
+                        break
+                    truncated += c
+                name = truncated
+            name_display = pad_korean(name, 12, 'left')
+
+            today_qty = pos.get('today_qty', 0)
+            today_entry = pos.get('today_entry_price', 0)
+
+            # Get current price
+            price_data = prices.get(symbol, {})
+            current = price_data.get('last', 0)
+            if current <= 0:
+                current = holdings_prices.get(symbol, {}).get('last', 0)
+            if current <= 0:
+                current = pos.get('current_price', 0)
+
+            if today_entry > 0 and current > 0:
+                pnl_pct = ((current - today_entry) / today_entry) * 100
+                pnl_str = f"{pnl_pct:+.2f}%"
+            else:
+                pnl_str = "---"
+
+            print(f"{symbol:<8} {name_display} {today_qty:>8} {today_entry:>12,} {current:>12,} {pnl_str:>10}")
+
+        print("=" * 66)
 
 
 def run_trading_loop():

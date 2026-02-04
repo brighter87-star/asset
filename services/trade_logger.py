@@ -4,6 +4,7 @@ Logs all orders, executions, and trading events to files.
 Sends notifications to Telegram for important events.
 """
 
+import csv
 import json
 import logging
 import os
@@ -128,6 +129,53 @@ class TradeLogger:
         except Exception as e:
             self.logger.error(f"Failed to write JSON log: {e}")
 
+    def _write_trade_history(
+        self,
+        symbol: str,
+        name: str,
+        side: str,
+        quantity: int,
+        price: int,
+        reason: str = "",
+        order_no: str = "",
+        pnl: Optional[int] = None,
+    ):
+        """Write trade to history CSV file."""
+        try:
+            history_file = LOG_DIR / "trade_history.csv"
+            file_exists = history_file.exists()
+
+            with open(history_file, "a", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+
+                # Write header if new file
+                if not file_exists:
+                    writer.writerow([
+                        "날짜", "시간", "종목코드", "종목명", "구분",
+                        "수량", "가격", "금액", "사유", "주문번호", "손익"
+                    ])
+
+                now = datetime.now()
+                amount = quantity * price
+                pnl_str = f"{pnl:,}" if pnl is not None else ""
+
+                writer.writerow([
+                    now.strftime("%Y-%m-%d"),
+                    now.strftime("%H:%M:%S"),
+                    symbol,
+                    name,
+                    side,
+                    quantity,
+                    f"{price:,}",
+                    f"{amount:,}",
+                    reason,
+                    order_no,
+                    pnl_str,
+                ])
+
+        except Exception as e:
+            self.logger.error(f"Failed to write trade history: {e}")
+
     def _send_telegram(self, message: str, parse_mode: str = "HTML"):
         """Send message to Telegram."""
         if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -190,6 +238,8 @@ class TradeLogger:
         order_time: str = "",
         message: str = "",
         error: str = "",
+        reason: str = "",
+        pnl: Optional[int] = None,
     ):
         """Log order result after API response."""
         self._get_file_handler()
@@ -198,11 +248,24 @@ class TradeLogger:
             msg = f"ORDER_SUCCESS | {side} {symbol} | qty={quantity} @ {price:,}원 | order_no={order_no} | time={order_time}"
             self.logger.info(msg)
 
+            # Write to trade history CSV
+            stock_name = _get_stock_name(symbol)
+            self._write_trade_history(
+                symbol=symbol,
+                name=stock_name,
+                side=side,
+                quantity=quantity,
+                price=price,
+                reason=reason or message,
+                order_no=order_no,
+                pnl=pnl,
+            )
+
             # Telegram notification
             emoji = "\u2705" if side == "BUY" else "\U0001F4B0"
             tg_msg = (
                 f"{emoji} <b>주문체결</b>\n"
-                f"종목: {_get_stock_name(symbol)} ({symbol})\n"
+                f"종목: {stock_name} ({symbol})\n"
                 f"구분: {side}\n"
                 f"수량: {quantity}주\n"
                 f"가격: {price:,}원\n"
