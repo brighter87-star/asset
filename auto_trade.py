@@ -401,8 +401,8 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     near_nxt_close = monitor.is_near_nxt_close(5)
     close_marker = " [NXT PYRAMID]" if near_nxt_close else ""
 
-    # Show which market prices are being queried (KRX or NXT)
-    price_market = "NXT" if monitor.is_nxt_only_hours() else "KRX"
+    # Show which market prices are being queried (KRX, NXT, or CLOSED)
+    price_market = monitor.get_current_market_display()
 
     print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring [{price_market}]{close_marker}")
     print(f"Breakout: 8:00-8:05, 9:00-9:10, 14:30-15:20 | Pyramid: 19:55-20:00{active_marker}")
@@ -540,7 +540,7 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
         holdings_with_return.sort(key=lambda x: x[2], reverse=True)
 
         print(f"\n[Holdings Stop Loss Monitor]")
-        print(f"{'CODE':<8} {'NAME':<12} {'ENTRY':>10} {'CURRENT':>10} {'수익률':>8} {'STOP':>10} {'STATUS':>8}")
+        print(f"{'CODE':<8} {'NAME':<12} {'ENTRY':>10} {'CURRENT':>10} {'P/L%':>8} {'STOP':>10} {'STATUS':>8}")
         print("-" * 70)
 
         for pos, current, return_pct in holdings_with_return:

@@ -517,8 +517,8 @@ class RestPricePoller:
                     if not self.running:
                         break
 
-                    # REST API로 개별 종목 시세 조회 (시간대에 따라 KRX/NXT 자동 선택)
-                    price_data = self.client.get_stock_price(stock_code, market_type=market_type)
+                    # REST API로 개별 종목 시세 조회 (시간대에 따라 KRX/NXT 자동 선택, NXT 실패 시 KRX 폴백)
+                    price_data = self.client.get_stock_price_with_fallback(stock_code, market_type=market_type)
                     price_data["updated_at"] = datetime.now(KST).isoformat()
 
                     with self.prices_lock:

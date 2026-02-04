@@ -520,6 +520,40 @@ class MonitorService:
 
         return nxt_morning or nxt_afternoon
 
+    def get_current_market_display(self) -> str:
+        """
+        Get current market display string for UI.
+
+        Returns:
+        - "KRX" during KRX hours (9:00-15:30)
+        - "NXT" during NXT-only hours (8:00-9:00, 15:40-20:00)
+        - "CLOSED" outside trading hours
+        """
+        now_kst = self.get_current_time_kst()
+
+        if now_kst.weekday() >= 5:
+            return "CLOSED"
+
+        current_time = now_kst.time()
+
+        # All markets closed (before 8:00 or after 20:00)
+        if current_time < time(8, 0) or current_time >= time(20, 0):
+            return "CLOSED"
+
+        # NXT morning (8:00-9:00)
+        if time(8, 0) <= current_time < time(9, 0):
+            return "NXT"
+
+        # KRX regular session (9:00-15:40)
+        if time(9, 0) <= current_time < time(15, 40):
+            return "KRX"
+
+        # NXT afternoon/evening (15:40-20:00)
+        if time(15, 40) <= current_time < time(20, 0):
+            return "NXT"
+
+        return "CLOSED"
+
     def check_pre_market_reload(self) -> bool:
         """
         Check and perform pre-market reload (5 min before open).
@@ -538,11 +572,12 @@ class MonitorService:
         return True
 
     def get_price(self, symbol: str) -> Optional[dict]:
-        """Get current price for symbol (auto-detects KRX/NXT based on time)."""
+        """Get current price for symbol (auto-detects KRX/NXT based on time, with fallback)."""
         try:
             # Use NXT market during NXT-only hours (8:00-9:00, 15:40-20:00)
+            # Falls back to KRX if NXT fails (some stocks don't support NXT)
             market_type = "NXT" if self.is_nxt_only_hours() else "KRX"
-            return self.client.get_stock_price(symbol, market_type=market_type)
+            return self.client.get_stock_price_with_fallback(symbol, market_type=market_type)
         except Exception as e:
             print(f"[{symbol}] Failed to get price: {e}")
             return None
