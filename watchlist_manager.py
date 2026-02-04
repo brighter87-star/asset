@@ -19,6 +19,48 @@ from services.kiwoom_service import get_stock_code, get_stock_name
 WATCHLIST_PATH = Path(__file__).parent / "watchlist.csv"
 
 
+def get_display_width(text: str) -> int:
+    """Calculate display width considering Korean characters (width 2)."""
+    width = 0
+    for char in text:
+        if '\uac00' <= char <= '\ud7a3' or '\u3131' <= char <= '\u318e':
+            width += 2  # Korean characters
+        else:
+            width += 1  # ASCII and others
+    return width
+
+
+def pad_korean(text: str, width: int, align: str = 'left') -> str:
+    """Pad text to specified width considering Korean character width."""
+    current_width = get_display_width(text)
+    padding = width - current_width
+
+    if padding <= 0:
+        return text
+
+    if align == 'left':
+        return text + ' ' * padding
+    elif align == 'right':
+        return ' ' * padding + text
+    else:  # center
+        left_pad = padding // 2
+        right_pad = padding - left_pad
+        return ' ' * left_pad + text + ' ' * right_pad
+
+
+def truncate_korean(text: str, max_width: int) -> str:
+    """Truncate text to max display width."""
+    width = 0
+    result = ""
+    for char in text:
+        char_width = 2 if '\uac00' <= char <= '\ud7a3' or '\u3131' <= char <= '\u318e' else 1
+        if width + char_width > max_width:
+            break
+        result += char
+        width += char_width
+    return result
+
+
 def load_watchlist() -> pd.DataFrame:
     """Load watchlist from CSV."""
     if WATCHLIST_PATH.exists():
@@ -140,7 +182,13 @@ def list_items():
     print("-" * 54)
 
     for _, row in df.iterrows():
-        name = str(row.get("name", ""))[:12]  # Truncate long names
+        name = str(row.get("name", ""))
+        # Truncate to max display width of 12
+        if get_display_width(name) > 12:
+            name = truncate_korean(name, 12)
+        # Pad to width 14 (left-aligned)
+        name_display = pad_korean(name, 14, 'left')
+
         target = int(row["target_price"])
         max_units = int(row.get("max_units", 1)) if pd.notna(row.get("max_units")) else 1
         sl = row.get("stop_loss_pct", "")
@@ -148,7 +196,7 @@ def list_items():
         added = row.get("added_date", "")
         added_str = str(added) if pd.notna(added) and added != "" else "-"
 
-        print(f"{name:<14} {target:>12,} {max_units:>5} {sl_str:>6} {added_str:>12}")
+        print(f"{name_display} {target:>12,} {max_units:>5} {sl_str:>6} {added_str:>12}")
 
     print("-" * 54)
     print(f"Total: {len(df)} items")
