@@ -568,8 +568,8 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
         holdings_with_return.sort(key=lambda x: x[2], reverse=True)
 
         print(f"\n[Holdings Stop Loss Monitor]")
-        print(f"{'CODE':<8} {'NAME':<12} {'ENTRY':>10} {'CURRENT':>10} {'P/L%':>8} {'STOP':>10} {'STATUS':>8}")
-        print("-" * 70)
+        print(f"{'CODE':<8} {'NAME':<12} {'ENTRY':>10} {'CURRENT':>10} {'P/L%':>8} {'UNITS':>6} {'STOP':>10} {'STATUS':>8}")
+        print("-" * 76)
 
         for pos, current, return_pct in holdings_with_return:
             symbol = pos['symbol']
@@ -585,6 +585,8 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
             entry = pos.get('entry_price', 0)
             stop_loss = pos.get('stop_loss_price', 0)
+            units = monitor.get_current_units(symbol)
+            units_str = f"{units:.1f}"
 
             if return_pct > -999:
                 return_str = f"{return_pct:+.1f}%"
@@ -601,11 +603,11 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
                     status = "NO SL"
                     stop_str = "---"
 
-                print(f"{symbol:<8} {name_display} {entry:>10,} {current:>10,} {return_str:>8} {stop_str:>10} {status:>8}")
+                print(f"{symbol:<8} {name_display} {entry:>10,} {current:>10,} {return_str:>8} {units_str:>6} {stop_str:>10} {status:>8}")
             else:
-                print(f"{symbol:<8} {name_display} {'---':>10} {'---':>10} {'---':>8} {'---':>10} {'---':>8}")
+                print(f"{symbol:<8} {name_display} {'---':>10} {'---':>10} {'---':>8} {units_str:>6} {'---':>10} {'---':>8}")
 
-        print("=" * 70)
+        print("=" * 76)
 
 
 def run_trading_loop():
