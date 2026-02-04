@@ -512,7 +512,7 @@ class MonitorService:
         Check if we're in NXT-only trading hours (KRX closed, NXT open).
 
         Returns True during:
-        - 8:00 ~ 8:50 (NXT morning before KRX opens)
+        - 8:00 ~ 9:00 (NXT morning before KRX opens)
         - 15:40 ~ 20:00 (NXT afternoon/evening after KRX closes)
 
         During these hours, price queries should use NXT market.
@@ -524,8 +524,8 @@ class MonitorService:
 
         current_time = now_kst.time()
 
-        # NXT morning session (before KRX opens): 8:00 ~ 8:50
-        nxt_morning = time(8, 0) <= current_time < time(8, 50)
+        # NXT morning session (before KRX opens): 8:00 ~ 9:00
+        nxt_morning = time(8, 0) <= current_time < time(9, 0)
 
         # NXT afternoon/evening session (after KRX closes): 15:40 ~ 20:00
         nxt_afternoon = time(15, 40) <= current_time < time(20, 0)
@@ -537,8 +537,8 @@ class MonitorService:
         Get current market display string for UI.
 
         Returns:
-        - "KRX" during KRX hours (8:50-15:40)
-        - "NXT" during NXT-only hours (8:00-8:50, 15:40-20:00)
+        - "KRX" during KRX hours (9:00-15:40)
+        - "NXT" during NXT-only hours (8:00-9:00, 15:40-20:00)
         - "CLOSED" outside trading hours
         """
         now_kst = self.get_current_time_kst()
@@ -552,12 +552,12 @@ class MonitorService:
         if current_time < time(8, 0) or current_time >= time(20, 0):
             return "CLOSED"
 
-        # NXT morning (8:00-8:50)
-        if time(8, 0) <= current_time < time(8, 50):
+        # NXT morning (8:00-9:00)
+        if time(8, 0) <= current_time < time(9, 0):
             return "NXT"
 
-        # KRX regular session (8:50-15:40)
-        if time(8, 50) <= current_time < time(15, 40):
+        # KRX regular session (9:00-15:40)
+        if time(9, 0) <= current_time < time(15, 40):
             return "KRX"
 
         # NXT afternoon/evening (15:40-20:00)
@@ -586,7 +586,7 @@ class MonitorService:
     def get_price(self, symbol: str) -> Optional[dict]:
         """Get current price for symbol (auto-detects KRX/NXT based on time, with fallback)."""
         try:
-            # Use NXT market during NXT-only hours (8:00-8:50, 15:40-20:00)
+            # Use NXT market during NXT-only hours (8:00-9:00, 15:40-20:00)
             # Falls back to KRX if NXT fails (some stocks don't support NXT)
             market_type = "NXT" if self.is_nxt_only_hours() else "KRX"
             return self.client.get_stock_price_with_fallback(symbol, market_type=market_type)

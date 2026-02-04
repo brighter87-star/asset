@@ -460,8 +460,8 @@ class RestPricePoller:
     Polls individual stock prices via get_stock_price().
 
     Automatically switches between KRX and NXT market based on time:
-    - 8:00 ~ 8:50: NXT (before KRX opens)
-    - 8:50 ~ 15:40: KRX (regular session)
+    - 8:00 ~ 9:00: NXT (before KRX opens)
+    - 9:00 ~ 15:40: KRX (regular session)
     - 15:40 ~ 20:00: NXT (after KRX closes)
     """
 
@@ -482,7 +482,7 @@ class RestPricePoller:
         Check if we're in NXT-only trading hours (KRX closed, NXT open).
 
         Returns True during:
-        - 8:00 ~ 8:50 (NXT morning before KRX opens)
+        - 8:00 ~ 9:00 (NXT morning before KRX opens)
         - 15:40 ~ 20:00 (NXT afternoon/evening after KRX closes)
         """
         from datetime import time as dt_time
@@ -494,8 +494,8 @@ class RestPricePoller:
 
         current_time = now_kst.time()
 
-        # NXT morning session (before KRX opens): 8:00 ~ 8:50
-        nxt_morning = dt_time(8, 0) <= current_time < dt_time(8, 50)
+        # NXT morning session (before KRX opens): 8:00 ~ 9:00
+        nxt_morning = dt_time(8, 0) <= current_time < dt_time(9, 0)
 
         # NXT afternoon/evening session (after KRX closes): 15:40 ~ 20:00
         nxt_afternoon = dt_time(15, 40) <= current_time < dt_time(20, 0)
