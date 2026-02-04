@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from db.connection import get_connection
 from services.kiwoom_service import KiwoomTradingClient, CreditLimitError
 from services.trade_logger import trade_logger
+from services.lot_service import get_latest_lot, get_lots_lifo
 
 # Position state file
 POSITIONS_FILE = Path(__file__).resolve().parent.parent / ".positions.json"
@@ -542,13 +543,19 @@ class OrderService:
 
     def check_stop_loss(self, symbol: str, current_price: int) -> dict:
         """
-        Check if stop loss is triggered.
+        Check if stop loss is triggered using LIFO lot-based logic.
+
+        Checks the most recent lot (LIFO) and triggers stop loss if
+        current price is -7% from that lot's entry price.
 
         Returns:
             dict with:
-                - triggered: True if any stop loss triggered
-                - type: "today" (today's qty only) or "all" (entire position)
+                - triggered: True if stop loss triggered
+                - type: "lot" (specific lot) or "all" (fallback)
                 - qty: quantity to sell
+                - lot_id: lot ID if lot-based
+                - entry_price: entry price of the lot
+                - change_pct: percentage change
         """
         result = {"triggered": False, "type": None, "qty": 0}
 
@@ -559,39 +566,52 @@ class OrderService:
         if pos.get("status") != "open":
             return result
 
-        entry_price = pos.get("entry_price", 0)
         stop_loss_pct = pos.get("stop_loss_pct", self.settings.STOP_LOSS_PCT)
-        total_qty = pos.get("quantity", 0)
 
-        # 오늘 매수분 정보
-        today_qty = pos.get("today_qty", 0)
-        today_entry_price = pos.get("today_entry_price", 0)
+        # LIFO lot-based stop loss check
+        try:
+            conn = get_connection()
+            latest_lot = get_latest_lot(conn, symbol)
+            conn.close()
+
+            if latest_lot:
+                lot_entry_price = int(latest_lot["avg_purchase_price"])
+                lot_qty = latest_lot["net_quantity"]
+                lot_id = latest_lot["lot_id"]
+                lot_date = latest_lot["trade_date"]
+
+                if lot_entry_price > 0:
+                    change_pct = ((current_price / lot_entry_price) - 1) * 100
+
+                    if change_pct <= -stop_loss_pct:
+                        trade_logger.log_stop_loss(
+                            symbol, lot_entry_price, current_price,
+                            stop_loss_pct, change_pct
+                        )
+                        print(f"[STOP] {symbol}: LIFO lot ({lot_date}) stop loss triggered ({change_pct:+.2f}%)")
+                        return {
+                            "triggered": True,
+                            "type": "lot",
+                            "qty": lot_qty,
+                            "lot_id": lot_id,
+                            "entry_price": lot_entry_price,
+                            "change_pct": change_pct,
+                        }
+
+        except Exception as e:
+            print(f"[STOP] {symbol}: Lot-based check failed ({e}), falling back to position-based")
+
+        # Fallback: position-based stop loss (전체 평균가 기준)
+        entry_price = pos.get("entry_price", 0)
+        total_qty = pos.get("quantity", 0)
 
         if entry_price <= 0:
             return result
 
-        # 1. 오늘 매수분 손절 체크 (오늘 매수분이 있고, 오늘 매수가 기준 -7%)
-        if today_qty > 0 and today_entry_price > 0:
-            today_change_pct = ((current_price / today_entry_price) - 1) * 100
-            if today_change_pct <= -stop_loss_pct:
-                trade_logger.log_stop_loss(
-                    symbol, today_entry_price, current_price,
-                    stop_loss_pct, today_change_pct
-                )
-                print(f"[STOP] {symbol}: Today's buy stop loss triggered ({today_change_pct:+.2f}%)")
-                return {
-                    "triggered": True,
-                    "type": "today",
-                    "qty": today_qty,
-                    "entry_price": today_entry_price,
-                    "change_pct": today_change_pct,
-                }
-
-        # 2. 전체 포지션 손절 체크 (전체 평균가 기준 -7%)
         total_change_pct = ((current_price / entry_price) - 1) * 100
         if total_change_pct <= -stop_loss_pct:
             trade_logger.log_stop_loss(symbol, entry_price, current_price, stop_loss_pct, total_change_pct)
-            print(f"[STOP] {symbol}: Total position stop loss triggered ({total_change_pct:+.2f}%)")
+            print(f"[STOP] {symbol}: Position stop loss triggered ({total_change_pct:+.2f}%)")
             return {
                 "triggered": True,
                 "type": "all",

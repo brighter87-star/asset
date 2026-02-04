@@ -859,12 +859,15 @@ class MonitorService:
                 stop_type = stop_result.get("type", "all")
                 sell_qty = stop_result.get("qty", 0)
                 change_pct = stop_result.get("change_pct", 0)
+                lot_entry = stop_result.get("entry_price", 0)
 
                 # 손절 시 현재가 - 3틱으로 주문 (체결 확보)
                 tick_size = self.client.get_tick_size(current_price)
                 sell_price = current_price - (tick_size * 3)
 
-                if stop_type == "today":
+                if stop_type == "lot":
+                    print(f"[{symbol}] STOP LOSS (LIFO lot): {change_pct:+.2f}% (진입가 {lot_entry:,}원) → sell {sell_qty}주 @ {sell_price:,}원")
+                elif stop_type == "today":
                     print(f"[{symbol}] STOP LOSS (today's buy): {change_pct:+.2f}% → sell {sell_qty}주 @ {sell_price:,}원")
                 else:
                     print(f"[{symbol}] STOP LOSS (total): {change_pct:+.2f}% → sell ALL @ {sell_price:,}원")
@@ -880,6 +883,7 @@ class MonitorService:
                         "symbol": symbol,
                         "type": stop_type,
                         "qty": sell_qty,
+                        "lot_id": stop_result.get("lot_id"),
                     })
 
         return stopped

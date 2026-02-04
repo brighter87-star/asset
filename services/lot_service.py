@@ -528,6 +528,93 @@ def get_open_lots(
         return cur.fetchall()
 
 
+def get_latest_lot(
+    conn: pymysql.connections.Connection,
+    stock_code: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Get the most recent open lot for a stock (LIFO - Last In First Out).
+
+    Args:
+        conn: Database connection
+        stock_code: Stock code
+
+    Returns:
+        Lot dictionary or None if no open lots
+    """
+    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                lot_id,
+                stock_code,
+                stock_name,
+                crd_class,
+                loan_dt,
+                trade_date,
+                net_quantity,
+                avg_purchase_price,
+                total_cost,
+                holding_days,
+                current_price,
+                unrealized_pnl,
+                unrealized_return_pct
+            FROM daily_lots
+            WHERE stock_code = %s
+              AND is_closed = FALSE
+              AND net_quantity > 0
+            ORDER BY trade_date DESC, lot_id DESC
+            LIMIT 1
+            """,
+            (stock_code,),
+        )
+
+        return cur.fetchone()
+
+
+def get_lots_lifo(
+    conn: pymysql.connections.Connection,
+    stock_code: str,
+) -> List[Dict[str, Any]]:
+    """
+    Get all open lots for a stock ordered by LIFO (most recent first).
+
+    Args:
+        conn: Database connection
+        stock_code: Stock code
+
+    Returns:
+        List of lot dictionaries ordered by trade_date DESC
+    """
+    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                lot_id,
+                stock_code,
+                stock_name,
+                crd_class,
+                loan_dt,
+                trade_date,
+                net_quantity,
+                avg_purchase_price,
+                total_cost,
+                holding_days,
+                current_price,
+                unrealized_pnl,
+                unrealized_return_pct
+            FROM daily_lots
+            WHERE stock_code = %s
+              AND is_closed = FALSE
+              AND net_quantity > 0
+            ORDER BY trade_date DESC, lot_id DESC
+            """,
+            (stock_code,),
+        )
+
+        return cur.fetchall()
+
+
 def construct_holdings_from_trades(
     conn: pymysql.connections.Connection,
     snapshot_date: Optional[date] = None,
