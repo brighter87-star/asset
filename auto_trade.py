@@ -18,6 +18,7 @@ from services.kiwoom_service import KiwoomTradingClient, get_stock_name, sync_ho
 from services.monitor_service import MonitorService
 from services.trade_logger import trade_logger
 from services.price_service import RestPricePoller, KiwoomWebSocketClient
+from services.lot_service import get_lots_lifo
 
 
 def load_today_trades_from_db() -> list:
@@ -609,6 +610,76 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
                 print(f"{symbol:<8} {name_display} {'---':>10} {'---':>10} {'---':>8} {units_str:>6} {'---':>10} {'---':>8}")
 
         print("=" * 76)
+
+    # Show lots near stop loss (bottom 5 by return %)
+    try:
+        conn = get_connection()
+        all_lots = []
+        # Get lots for all held stocks
+        held_symbols = set(pos['symbol'] for pos in positions.values())
+        for symbol in held_symbols:
+            lots = get_lots_lifo(conn, symbol)
+            for lot in lots:
+                # Get current price
+                price_data = prices.get(symbol, {})
+                current = price_data.get('last', 0)
+                if current <= 0:
+                    current = holdings_prices.get(symbol, {}).get('last', 0)
+
+                if current > 0 and lot['avg_purchase_price']:
+                    entry = int(lot['avg_purchase_price'])
+                    return_pct = ((current - entry) / entry) * 100
+                    stop_price = int(entry * 0.93)  # -7%
+                    all_lots.append({
+                        'symbol': symbol,
+                        'name': lot['stock_name'],
+                        'qty': lot['net_quantity'],
+                        'entry': entry,
+                        'current': current,
+                        'return_pct': return_pct,
+                        'stop_price': stop_price,
+                        'trade_date': lot['trade_date'],
+                    })
+        conn.close()
+
+        if all_lots:
+            # Sort by return % ascending (worst first)
+            all_lots.sort(key=lambda x: x['return_pct'])
+            bottom_lots = all_lots[:5]
+
+            print(f"\n[Lots Near Stop Loss] (Bottom 5 by return %)")
+            print(f"{'CODE':<8} {'DATE':<12} {'QTY':>6} {'ENTRY':>10} {'CURRENT':>10} {'STOP':>10} {'P/L%':>8} {'STATUS':>8}")
+            print("-" * 82)
+
+            for lot in bottom_lots:
+                name = lot['name'] or ''
+                if get_display_width(name) > 10:
+                    truncated = ""
+                    for c in name:
+                        if get_display_width(truncated + c) > 10:
+                            break
+                        truncated += c
+                    name = truncated
+
+                return_str = f"{lot['return_pct']:+.1f}%"
+
+                # Status based on return %
+                if lot['return_pct'] <= -7:
+                    status = "STOP!"
+                elif lot['return_pct'] <= -5:
+                    status = "DANGER"
+                elif lot['return_pct'] <= -3:
+                    status = "WARN"
+                else:
+                    status = "OK"
+
+                trade_date_str = lot['trade_date'].strftime('%m/%d') if lot['trade_date'] else ''
+
+                print(f"{lot['symbol']:<8} {trade_date_str:<12} {lot['qty']:>6} {lot['entry']:>10,} {lot['current']:>10,} {lot['stop_price']:>10,} {return_str:>8} {status:>8}")
+
+            print("=" * 82)
+    except Exception as e:
+        print(f"\n[Lots Near Stop Loss] Failed to load: {e}")
 
 
 def run_trading_loop():
