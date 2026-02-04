@@ -495,6 +495,31 @@ class MonitorService:
         current_time = now_kst.time()
         return current_time < time(15, 20)
 
+    def is_nxt_only_hours(self) -> bool:
+        """
+        Check if we're in NXT-only trading hours (KRX closed, NXT open).
+
+        Returns True during:
+        - 8:00 ~ 9:00 (NXT morning before KRX opens)
+        - 15:40 ~ 20:00 (NXT afternoon/evening after KRX closes)
+
+        During these hours, price queries should use NXT market.
+        """
+        now_kst = self.get_current_time_kst()
+
+        if now_kst.weekday() >= 5:
+            return False
+
+        current_time = now_kst.time()
+
+        # NXT morning session (before KRX opens): 8:00 ~ 9:00
+        nxt_morning = time(8, 0) <= current_time < time(9, 0)
+
+        # NXT afternoon/evening session (after KRX closes): 15:40 ~ 20:00
+        nxt_afternoon = time(15, 40) <= current_time < time(20, 0)
+
+        return nxt_morning or nxt_afternoon
+
     def check_pre_market_reload(self) -> bool:
         """
         Check and perform pre-market reload (5 min before open).
@@ -513,9 +538,11 @@ class MonitorService:
         return True
 
     def get_price(self, symbol: str) -> Optional[dict]:
-        """Get current price for symbol."""
+        """Get current price for symbol (auto-detects KRX/NXT based on time)."""
         try:
-            return self.client.get_stock_price(symbol)
+            # Use NXT market during NXT-only hours (8:00-9:00, 15:40-20:00)
+            market_type = "NXT" if self.is_nxt_only_hours() else "KRX"
+            return self.client.get_stock_price(symbol, market_type=market_type)
         except Exception as e:
             print(f"[{symbol}] Failed to get price: {e}")
             return None

@@ -458,6 +458,11 @@ class RestPricePoller:
     """
     Price poller using REST API (ka10001).
     Polls individual stock prices via get_stock_price().
+
+    Automatically switches between KRX and NXT market based on time:
+    - 8:00 ~ 9:00: NXT (before KRX opens)
+    - 9:00 ~ 15:30: KRX (regular session)
+    - 15:40 ~ 20:00: NXT (after KRX closes)
     """
 
     def __init__(self, interval: float = 1.0):
@@ -472,16 +477,48 @@ class RestPricePoller:
 
         self.on_price_update: Optional[Callable] = None
 
+    def _is_nxt_only_hours(self) -> bool:
+        """
+        Check if we're in NXT-only trading hours (KRX closed, NXT open).
+
+        Returns True during:
+        - 8:00 ~ 9:00 (NXT morning before KRX opens)
+        - 15:40 ~ 20:00 (NXT afternoon/evening after KRX closes)
+        """
+        from datetime import time as dt_time
+
+        now_kst = datetime.now(KST)
+
+        if now_kst.weekday() >= 5:
+            return False
+
+        current_time = now_kst.time()
+
+        # NXT morning session (before KRX opens): 8:00 ~ 9:00
+        nxt_morning = dt_time(8, 0) <= current_time < dt_time(9, 0)
+
+        # NXT afternoon/evening session (after KRX closes): 15:40 ~ 20:00
+        nxt_afternoon = dt_time(15, 40) <= current_time < dt_time(20, 0)
+
+        return nxt_morning or nxt_afternoon
+
+    def _get_current_market(self) -> str:
+        """Get the appropriate market type based on current time."""
+        return "NXT" if self._is_nxt_only_hours() else "KRX"
+
     def _poll_prices(self):
         """Poll prices for subscribed stocks."""
         while self.running:
             try:
+                # Determine which market to query based on current time
+                market_type = self._get_current_market()
+
                 for stock_code in self.subscribed_stocks:
                     if not self.running:
                         break
 
-                    # REST API로 개별 종목 시세 조회
-                    price_data = self.client.get_stock_price(stock_code)
+                    # REST API로 개별 종목 시세 조회 (시간대에 따라 KRX/NXT 자동 선택)
+                    price_data = self.client.get_stock_price(stock_code, market_type=market_type)
                     price_data["updated_at"] = datetime.now(KST).isoformat()
 
                     with self.prices_lock:
@@ -509,7 +546,8 @@ class RestPricePoller:
         self.running = True
         self.poll_thread = threading.Thread(target=self._poll_prices, daemon=True)
         self.poll_thread.start()
-        print("[POLL] Started REST API price polling (holdings only)")
+        market = self._get_current_market()
+        print(f"[POLL] Started REST API price polling (auto KRX/NXT) - Current: {market}")
 
     def stop(self):
         """Stop polling."""

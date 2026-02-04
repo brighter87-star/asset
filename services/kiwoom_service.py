@@ -1703,12 +1703,13 @@ class KiwoomTradingClient(KiwoomAPIClient):
         else:
             return 1000
 
-    def get_stock_price(self, stock_code: str, _retry: bool = True) -> Dict[str, Any]:
+    def get_stock_price(self, stock_code: str, market_type: str = "KRX", _retry: bool = True) -> Dict[str, Any]:
         """
         개별 종목 현재가 조회 (REST API)
 
         Args:
             stock_code: 종목코드 (6자리)
+            market_type: 시장구분 (KRX: 정규장, NXT: 대체거래소)
             _retry: 토큰 만료 시 재시도 여부 (내부용)
 
         Returns:
@@ -1722,6 +1723,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
                 "volume": 25211212,    # 거래량
                 "change": 13900,       # 전일대비
                 "change_pct": 9.24,    # 등락률
+                "market": "KRX",       # 조회 시장
             }
         """
         token = self.get_access_token()
@@ -1736,6 +1738,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
 
         body = {
             "stk_cd": stock_code,
+            "dmst_stex_tp": market_type,  # KRX: 정규장, NXT: 대체거래소
         }
 
         try:
@@ -1752,7 +1755,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
                 if _retry:
                     print(f"[TOKEN] Token expired, refreshing and retrying...")
                     self.refresh_token()
-                    return self.get_stock_price(stock_code, _retry=False)
+                    return self.get_stock_price(stock_code, market_type=market_type, _retry=False)
                 else:
                     raise Exception(f"API error: {return_msg}")
 
@@ -1795,10 +1798,11 @@ class KiwoomTradingClient(KiwoomAPIClient):
                 "volume": parse_price(result.get("trde_qty")),
                 "change": change,
                 "change_pct": parse_float(result.get("flu_rt")),
+                "market": market_type,
             }
 
         except Exception as e:
-            print(f"[ERROR] Failed to get stock price for {stock_code}: {e}")
+            print(f"[ERROR] Failed to get stock price for {stock_code} ({market_type}): {e}")
             return {
                 "stock_code": stock_code,
                 "name": "",
@@ -1809,6 +1813,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
                 "volume": 0,
                 "change": 0,
                 "change_pct": 0.0,
+                "market": market_type,
             }
 
     def get_stock_list(self, market_type: str = "0") -> List[Dict[str, Any]]:

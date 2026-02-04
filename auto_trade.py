@@ -401,7 +401,10 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     near_nxt_close = monitor.is_near_nxt_close(5)
     close_marker = " [NXT PYRAMID]" if near_nxt_close else ""
 
-    print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring{close_marker}")
+    # Show which market prices are being queried (KRX or NXT)
+    price_market = "NXT" if monitor.is_nxt_only_hours() else "KRX"
+
+    print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring [{price_market}]{close_marker}")
     print(f"Breakout: 8:00-8:05, 9:00-9:10, 14:30-15:20 | Pyramid: 19:55-20:00{active_marker}")
     print("=" * 78)
 
