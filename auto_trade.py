@@ -436,13 +436,14 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
             held_items.append((item, current, diff_pct, pos))
         else:
             # Not held: distance from target (negative = below target)
+            # If no price, use -999 to sort at bottom
             diff_pct = ((current - target) / target) * 100 if current > 0 else -999
-            # Filter: show only items within 5% of target or above
-            if current > 0 and diff_pct >= -5:
-                non_held_items.append((item, current, diff_pct))
+            non_held_items.append((item, current, diff_pct))
 
     # Sort non-held by GAP descending (closest to breakout first = highest diff_pct)
+    # Then limit to top 5 closest to target
     non_held_items.sort(key=lambda x: x[2], reverse=True)
+    non_held_items = non_held_items[:5]
 
     # Sort held by P/L descending (best performing first)
     held_items.sort(key=lambda x: x[2], reverse=True)
@@ -471,11 +472,19 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
             max_units = item.get('max_units', 1)
             units_str = f"{current_units:.1f}/{max_units}"
 
-            gap_str = f"{diff_pct:+.2f}%"
+            # Handle no price case
+            if current > 0:
+                current_str = f"{current:,}"
+                gap_str = f"{diff_pct:+.2f}%"
+            else:
+                current_str = "---"
+                gap_str = "---"
 
             # Status
             if monitor.is_sold_after_added(item):
                 status_str = "EXPIRD"  # 오늘 매매 후 손절된 종목 (목표가 수정시 리셋)
+            elif current <= 0:
+                status_str = "NOPRC"  # No price data
             elif diff_pct >= 0:
                 status_str = "BREAK"
             elif diff_pct >= -1:
@@ -483,7 +492,7 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
             else:
                 status_str = "WAIT"
 
-            print(f"{name_display} {target:>12,} {current:>12,} {gap_str:>10} {units_str:>8} {status_str:>8}")
+            print(f"{name_display} {target:>12,} {current_str:>12} {gap_str:>10} {units_str:>8} {status_str:>8}")
 
         print("=" * 74)
 
