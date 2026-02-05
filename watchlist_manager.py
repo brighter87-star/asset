@@ -11,12 +11,36 @@ Usage:
 
 import argparse
 import pandas as pd
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from services.kiwoom_service import get_stock_code, get_stock_name
 
 WATCHLIST_PATH = Path(__file__).parent / "watchlist.csv"
+
+
+def get_effective_added_date() -> date:
+    """
+    Get the effective added_date based on current time.
+
+    - Before market close (20:00): returns today
+    - After market close (20:00): returns next trading day
+
+    This ensures that editing watchlist after market close sets the date
+    to the next trading day, so EXPIRED status from today's sell is cleared.
+    """
+    now = datetime.now()
+    today = date.today()
+
+    # If after market close (20:00), set to next trading day
+    if now.time() >= time(20, 0):
+        next_date = today + timedelta(days=1)
+        # Skip weekends
+        while next_date.weekday() >= 5:  # Saturday=5, Sunday=6
+            next_date += timedelta(days=1)
+        return next_date
+
+    return today
 
 
 def get_display_width(text: str) -> int:
@@ -122,17 +146,18 @@ def add_item(ticker_or_name: str, target_price: int, max_units: int = 1, stop_lo
         print(f"    - Added: {existing.get('added_date', 'N/A')}")
         return
 
+    effective_date = get_effective_added_date()
     new_row = {
         "name": name,
         "target_price": target_price,
         "stop_loss_pct": stop_loss_pct if stop_loss_pct else "",
         "max_units": max_units,
-        "added_date": str(date.today()),
+        "added_date": str(effective_date),
     }
 
     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     save_watchlist(df)
-    print(f"[OK] Added {name} @ {target_price:,}원 (max_units={max_units}, added={date.today()})")
+    print(f"[OK] Added {name} @ {target_price:,}원 (max_units={max_units}, added={effective_date})")
 
 
 def remove_item(ticker_or_name: str):
@@ -191,9 +216,11 @@ def update_item(ticker_or_name: str, target_price: int = None, max_units: int = 
         return
 
     # Update added_date when target_price changes (resets expired status)
+    # After market close (20:00), set to next trading day
     if target_changed:
-        df.loc[idx, "added_date"] = str(date.today())
-        changes.append(f"added_date: {date.today()} (reset)")
+        effective_date = get_effective_added_date()
+        df.loc[idx, "added_date"] = str(effective_date)
+        changes.append(f"added_date: {effective_date} (reset)")
 
     save_watchlist(df)
     print(f"[OK] Updated {name}")
