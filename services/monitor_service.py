@@ -449,11 +449,13 @@ class MonitorService:
         - KRX: 9:00 ~ 15:30 (15:20~15:30 is 동시호가, no execution)
         - NXT: 8:00 ~ 20:00
 
-        Breakout windows for initial entry (0.5 unit):
-        - 8:00 ~ 8:05 (NXT morning open)
-        - 9:00 ~ 9:10 (KRX morning open)
-        - 15:15 ~ 15:20 (KRX afternoon, right before 동시호가)
-        - 19:30 ~ 20:00 (NXT evening - full 1 unit if first entry)
+        Breakout windows:
+        - 8:00 ~ 8:05 (NXT morning open) - 0.5 unit
+        - 9:00 ~ 9:10 (KRX morning open) - 0.5 unit
+        - 15:15 ~ 15:20 (KRX afternoon, right before 동시호가) - 0.5 unit
+        - 19:30 ~ 20:00 (NXT evening):
+          - 저녁에 첫 돌파: 1 unit (0.5 + 피라미딩 0.5)
+          - 오전/오후에 이미 매수: 추가 0.5 unit
 
         Morning (8:00~9:10) and afternoon (15:15~15:20) are separate sessions.
         A stock can be bought in both sessions (0.5 + 0.5 = 1 unit).
@@ -813,8 +815,9 @@ class MonitorService:
         target_price = item["target_price"]
         stop_loss_pct = item.get("stop_loss_pct")
 
-        # NXT 저녁 (19:30-20:00)에 첫 진입이면 full 1 unit 매수
-        is_nxt_evening_first_entry = self.is_nxt_evening_session()
+        # NXT 저녁 (19:30-20:00)에 "첫 진입"이면 full 1 unit 매수
+        # 첫 진입 = 저녁 세션이고 오늘 이 종목을 아직 안 샀을 때
+        is_nxt_evening_first_entry = self.is_nxt_evening_session() and not self.has_today_position(symbol)
 
         # Get current session for tracking
         current_session = self.get_current_session() or "morning"
@@ -856,8 +859,9 @@ class MonitorService:
             self._save_daily_triggers()  # Persist to file
 
             # NXT 저녁 첫 진입이면 바로 피라미딩 (full 1 unit)
+            # 오전/오후에 이미 매수한 경우에는 피라미딩 안함 (0.5 unit만)
             if is_nxt_evening_first_entry:
-                print(f"[{symbol}] NXT evening first entry - adding pyramid immediately")
+                print(f"[{symbol}] NXT evening FIRST entry - adding pyramid for full 1 unit")
                 self.order_service.execute_buy(
                     symbol=symbol,
                     target_price=entry_price,
