@@ -440,8 +440,25 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     # Sort by diff ascending (closest to target first)
     watchlist_with_diff.sort(key=lambda x: x[2])
 
-    # Display sorted items
-    for item, current, _ in watchlist_with_diff:
+    # Filter to show only items within 5% of target or exceeded
+    # For held items: show all (already invested)
+    # For non-held items: show if diff <= 5% or current >= target
+    filtered_watchlist = []
+    for item, current, diff_pct in watchlist_with_diff:
+        ticker = item['ticker']
+        target = item['target_price']
+        if ticker in positions:
+            # Already held - always show
+            filtered_watchlist.append((item, current, diff_pct))
+        elif current > 0:
+            # Not held - filter by distance to target
+            dist_to_target = ((target - current) / current) * 100
+            if dist_to_target <= 5 or current >= target:
+                filtered_watchlist.append((item, current, diff_pct))
+        # Skip items with no price data
+
+    # Display filtered items
+    for item, current, _ in filtered_watchlist:
         ticker = item['ticker']
         target = item['target_price']
 
@@ -541,12 +558,8 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
         print("=" * 66)
 
-    # Show all holdings with stop loss status (exclude watchlist items already shown)
-    watchlist_tickers = {item['ticker'] for item in monitor.watchlist}
-    other_holdings = [
-        pos for pos in positions.values()
-        if pos['symbol'] not in watchlist_tickers
-    ]
+    # Show all holdings with stop loss status
+    other_holdings = list(positions.values())
 
     if other_holdings:
         # Calculate return % for sorting
