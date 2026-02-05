@@ -506,7 +506,11 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
                 # Negative = above target (breakout!)
                 diff_pct = ((current - target) / target) * 100
                 pnl_str = f"{diff_pct:+.2f}%"
-                if diff_pct >= 0:
+
+                # Check if sold after being added to watchlist
+                if monitor.is_sold_after_added(item):
+                    status_str = "SOLD"
+                elif diff_pct >= 0:
                     status_str = "BREAK"
                 elif diff_pct >= -1:
                     status_str = "NEAR"

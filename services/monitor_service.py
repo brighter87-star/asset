@@ -225,6 +225,54 @@ class MonitorService:
         self._save_sold_today()
         print(f"[SOLD] {symbol} marked as sold today - will not re-buy")
 
+    def was_sold_after_added(self, symbol: str, added_date: str) -> bool:
+        """
+        Check if a stock was sold after it was added to watchlist.
+
+        Args:
+            symbol: Stock code
+            added_date: Date string when added to watchlist (YYYY-MM-DD or similar)
+
+        Returns:
+            True if there's a sell record after added_date
+        """
+        if not added_date:
+            return False
+
+        try:
+            # Parse added_date (handle various formats)
+            from datetime import datetime as dt
+            added_date_str = str(added_date).split()[0]  # Take date part only
+
+            # Try parsing different formats
+            for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"]:
+                try:
+                    added_dt = dt.strptime(added_date_str, fmt).date()
+                    break
+                except ValueError:
+                    continue
+            else:
+                return False  # Can't parse date
+
+            # Check trade history for sells after added_date
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT COUNT(*) FROM account_trade_history
+                        WHERE REPLACE(stk_cd, 'A', '') = %s
+                          AND trade_date > %s
+                          AND (io_tp_nm LIKE '%%매도%%' OR io_tp_nm LIKE '%%상환%%')
+                    """, (symbol, added_dt))
+                    count = cur.fetchone()[0]
+                return count > 0
+            finally:
+                conn.close()
+
+        except Exception as e:
+            print(f"[WARNING] Failed to check sell history for {symbol}: {e}")
+            return False
+
     def clear_purchased_stock(self, symbol: str):
         """Remove stock from purchased list (called when removed from watchlist)."""
         if symbol in self.purchased_stocks:
@@ -835,6 +883,22 @@ class MonitorService:
         """
         return [item for item in self.watchlist if self.can_buy_more_units(item)]
 
+    def is_sold_after_added(self, item: dict) -> bool:
+        """
+        Check if a watchlist item was sold after it was added.
+
+        Returns True if:
+        - Item has added_date AND
+        - There's a sell record for this stock after added_date
+        """
+        symbol = item.get("ticker")
+        added_date = item.get("added_date")
+
+        if not symbol or not added_date:
+            return False
+
+        return self.was_sold_after_added(symbol, added_date)
+
     def has_today_position(self, symbol: str) -> bool:
         """
         Check if we already have a position purchased today.
@@ -863,6 +927,10 @@ class MonitorService:
 
         # Skip if sold today (manual or stop loss)
         if self.is_sold_today(symbol):
+            return False
+
+        # Skip if sold after added to watchlist (permanent skip until re-added)
+        if self.is_sold_after_added(item):
             return False
 
         # Check current session
@@ -937,6 +1005,10 @@ class MonitorService:
 
         # Skip if sold today (manual or stop loss)
         if self.is_sold_today(symbol):
+            return False
+
+        # Skip if sold after added to watchlist (permanent skip until re-added)
+        if self.is_sold_after_added(item):
             return False
 
         # Gap-up is morning session only
