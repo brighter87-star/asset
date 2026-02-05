@@ -407,11 +407,11 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
     print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring [{price_market}]{close_marker}")
     print(f"Breakout: 8:00-8:05, 9:00-9:10, 14:30-15:20 | Pyramid: 19:55-20:00{active_marker}")
-    print("=" * 82)
+    print("=" * 74)
 
     # Header - P/L% for held positions, TO_BRK for watchlist items
-    print(f"{'CODE':<8} {'NAME':<12} {'TARGET':>12} {'CURRENT':>12} {'P/L%':>10} {'UNITS':>8} {'STATUS':>8}")
-    print("-" * 82)
+    print(f"{'NAME':<14} {'TARGET':>12} {'CURRENT':>12} {'P/L%':>10} {'UNITS':>8} {'STATUS':>8}")
+    print("-" * 74)
 
     # Calculate diff for all items and sort by diff ascending (closest to breakout first)
     watchlist_with_diff = []
@@ -465,15 +465,15 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
         target = item['target_price']
 
         name = item.get('name', '') or get_stock_name(ticker)
-        # Truncate name if display width > 10
-        if get_display_width(name) > 10:
+        # Truncate name if display width > 12
+        if get_display_width(name) > 12:
             truncated = ""
             for c in name:
-                if get_display_width(truncated + c) > 10:
+                if get_display_width(truncated + c) > 12:
                     break
                 truncated += c
             name = truncated
-        name_display = pad_korean(name, 12, 'left')
+        name_display = pad_korean(name, 14, 'left')
 
         # Get current/max units info
         current_units = monitor.get_current_units(ticker)
@@ -517,11 +517,11 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
                 else:
                     status_str = "WAIT"
 
-            print(f"{ticker:<8} {name_display} {target:>12,} {current:>12,} {pnl_str:>10} {units_str:>8} {status_str:>8}")
+            print(f"{name_display} {target:>12,} {current:>12,} {pnl_str:>10} {units_str:>8} {status_str:>8}")
         else:
-            print(f"{ticker:<8} {name_display} {target:>12,} {'---':>12} {'---':>10} {units_str:>8} {'LOAD':>8}")
+            print(f"{name_display} {target:>12,} {'---':>12} {'---':>10} {units_str:>8} {'LOAD':>8}")
 
-    print("=" * 82)
+    print("=" * 74)
 
     # Show today's purchases section (all stocks with today_qty > 0)
     # Shows regardless of whether bot purchased or user purchased manually
@@ -593,20 +593,20 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
         holdings_with_return.sort(key=lambda x: x[2], reverse=True)
 
         print(f"\n[Holdings Stop Loss Monitor]")
-        print(f"{'CODE':<8} {'NAME':<12} {'ENTRY':>10} {'CURRENT':>10} {'P/L%':>8} {'UNITS':>6} {'STOP':>10} {'STATUS':>8}")
-        print("-" * 76)
+        print(f"{'NAME':<14} {'ENTRY':>10} {'CURRENT':>10} {'P/L%':>8} {'UNITS':>6} {'STOP':>10} {'STATUS':>8}")
+        print("-" * 68)
 
         for pos, current, return_pct in holdings_with_return:
             symbol = pos['symbol']
             name = pos.get('name', '') or get_stock_name(symbol)
-            if get_display_width(name) > 10:
+            if get_display_width(name) > 12:
                 truncated = ""
                 for c in name:
-                    if get_display_width(truncated + c) > 10:
+                    if get_display_width(truncated + c) > 12:
                         break
                     truncated += c
                 name = truncated
-            name_display = pad_korean(name, 12, 'left')
+            name_display = pad_korean(name, 14, 'left')
 
             entry = pos.get('entry_price', 0)
             stop_loss = pos.get('stop_loss_price', 0)
@@ -628,11 +628,11 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
                     status = "NO SL"
                     stop_str = "---"
 
-                print(f"{symbol:<8} {name_display} {entry:>10,} {current:>10,} {return_str:>8} {units_str:>6} {stop_str:>10} {status:>8}")
+                print(f"{name_display} {entry:>10,} {current:>10,} {return_str:>8} {units_str:>6} {stop_str:>10} {status:>8}")
             else:
-                print(f"{symbol:<8} {name_display} {'---':>10} {'---':>10} {'---':>8} {units_str:>6} {'---':>10} {'---':>8}")
+                print(f"{name_display} {'---':>10} {'---':>10} {'---':>8} {units_str:>6} {'---':>10} {'---':>8}")
 
-        print("=" * 76)
+        print("=" * 68)
 
     # Show lots near stop loss (bottom 5 by return %)
     try:
@@ -673,18 +673,19 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
             bottom_lots = all_lots[:5]
 
             print(f"\n[Lots Near Stop Loss] (Bottom 5 by return %)")
-            print(f"{'CODE':<8} {'DATE':<12} {'QTY':>6} {'ENTRY':>10} {'CURRENT':>10} {'STOP':>10} {'P/L%':>8} {'STATUS':>8}")
-            print("-" * 82)
+            print(f"{'NAME':<14} {'DATE':<8} {'QTY':>6} {'ENTRY':>10} {'CURRENT':>10} {'STOP':>10} {'P/L%':>8} {'STATUS':>8}")
+            print("-" * 78)
 
             for lot in bottom_lots:
                 name = lot['name'] or ''
-                if get_display_width(name) > 10:
+                if get_display_width(name) > 12:
                     truncated = ""
                     for c in name:
-                        if get_display_width(truncated + c) > 10:
+                        if get_display_width(truncated + c) > 12:
                             break
                         truncated += c
                     name = truncated
+                name_display = pad_korean(name, 14, 'left')
 
                 return_str = f"{lot['return_pct']:+.1f}%"
 
@@ -700,9 +701,9 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
                 trade_date_str = lot['trade_date'].strftime('%m/%d') if lot['trade_date'] else ''
 
-                print(f"{lot['symbol']:<8} {trade_date_str:<12} {lot['qty']:>6} {lot['entry']:>10,} {lot['current']:>10,} {lot['stop_price']:>10,} {return_str:>8} {status:>8}")
+                print(f"{name_display} {trade_date_str:<8} {lot['qty']:>6} {lot['entry']:>10,} {lot['current']:>10,} {lot['stop_price']:>10,} {return_str:>8} {status:>8}")
 
-            print("=" * 82)
+            print("=" * 78)
     except Exception as e:
         print(f"\n[Lots Near Stop Loss] Failed to load: {e}")
 
