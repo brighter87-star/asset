@@ -766,8 +766,8 @@ class MonitorService:
 
         Session-based logic:
         - Morning (8:00~9:10): 돌파 매수 0.5 unit (한 번만)
-        - After-hours (17:50~18:00): 오전에 매수했고 NXT 불가 종목만 추가 0.5 unit
-        - Evening (19:30~20:00): NXT 가능 종목만 추가 0.5 unit (첫 돌파면 1 unit)
+        - After-hours (17:50~18:00): NXT 불가 종목만 (첫 돌파면 1 unit, 추가면 0.5 unit)
+        - Evening (19:30~20:00): NXT 가능 종목만 (첫 돌파면 1 unit, 추가면 0.5 unit)
         """
         symbol = item["ticker"]
         target_price = item["target_price"]
@@ -797,14 +797,16 @@ class MonitorService:
                 return False
 
         elif current_session == "after_hours":
-            # 시간외단일가: 오전에 매수했고 NXT 불가 종목만
-            if not has_morning_buy:
-                return False  # No morning buy, skip after_hours
+            # 시간외단일가: NXT 불가 종목만
             if self.is_nxt_tradable(symbol):
                 return False  # NXT 가능 종목은 저녁에 매수
             # Check if already bought in after_hours
             if symbol in self.daily_triggers and self.daily_triggers[symbol].get("session") == "after_hours":
                 return False
+            # Safety check for first entry
+            if not has_morning_buy and self.has_today_position(symbol):
+                return False
+            # If first buy (no morning buy), will do full 1 unit in execute_entry
 
         elif current_session == "evening":
             # NXT 저녁: NXT 가능 종목만
@@ -880,12 +882,17 @@ class MonitorService:
         # Get current session for tracking
         current_session = self.get_current_session() or "morning"
 
-        # NXT 저녁 (19:30-20:00)에 "첫 진입"이면 full 1 unit 매수
-        # 첫 진입 = 저녁 세션이고 오늘 이 종목을 아직 안 샀을 때
-        is_nxt_evening_first_entry = self.is_nxt_evening_session() and not self.has_today_position(symbol)
-
         # 시간외단일가 세션 체크 (17:50~18:00)
         is_after_hours = current_session == "after_hours"
+
+        # 첫 진입 체크 (오늘 이 종목을 아직 안 샀을 때)
+        is_first_entry = not self.has_today_position(symbol)
+
+        # NXT 저녁 (19:30-20:00)에 "첫 진입"이면 full 1 unit 매수
+        is_nxt_evening_first_entry = self.is_nxt_evening_session() and is_first_entry
+
+        # 시간외단일가 (17:50-18:00)에 "첫 진입"이면 full 1 unit 매수
+        is_after_hours_first_entry = is_after_hours and is_first_entry
 
         # 주문 시도 전에 먼저 daily_triggers에 등록 (중복 주문 방지)
         self.daily_triggers[symbol] = {
@@ -893,7 +900,7 @@ class MonitorService:
             "entry_time": datetime.now().isoformat(),
             "session": current_session,  # Track which session triggered
             "status": "pending",
-            "nxt_evening_entry": is_nxt_evening_first_entry,
+            "first_entry": is_first_entry,
         }
         self._save_daily_triggers()  # Persist to file
 
@@ -912,7 +919,9 @@ class MonitorService:
         order_type = "62" if is_after_hours else "0"
         use_after_hours_price = is_after_hours
 
-        if is_after_hours:
+        if is_after_hours_first_entry:
+            print(f"[{symbol}] 시간외단일가 첫 돌파 매수 (1 unit)")
+        elif is_after_hours:
             print(f"[{symbol}] 시간외단일가 추가 매수 (0.5 unit)")
 
         # First buy (0.5 unit)
@@ -932,8 +941,9 @@ class MonitorService:
             })
             self._save_daily_triggers()  # Persist to file
 
-            # NXT 저녁 첫 진입이면 바로 피라미딩 (full 1 unit)
-            # 오전/시간외단일가에 이미 매수한 경우에는 피라미딩 안함 (0.5 unit만)
+            # 첫 진입이면 바로 피라미딩 (full 1 unit)
+            # - NXT 저녁 첫 진입
+            # - 시간외단일가 첫 진입
             if is_nxt_evening_first_entry:
                 print(f"[{symbol}] NXT evening FIRST entry - adding pyramid for full 1 unit")
                 self.order_service.execute_buy(
@@ -941,6 +951,16 @@ class MonitorService:
                     target_price=entry_price,
                     is_initial=False,  # pyramid
                     stop_loss_pct=stop_loss_pct,
+                )
+            elif is_after_hours_first_entry:
+                print(f"[{symbol}] 시간외단일가 FIRST entry - adding pyramid for full 1 unit")
+                self.order_service.execute_buy(
+                    symbol=symbol,
+                    target_price=entry_price,
+                    is_initial=False,  # pyramid
+                    stop_loss_pct=stop_loss_pct,
+                    order_type="62",
+                    use_after_hours_price=True,
                 )
 
             # Mark as purchased to prevent duplicate buys
