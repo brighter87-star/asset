@@ -194,6 +194,31 @@ def update_item(ticker_or_name: str, target_price: int = None, max_units: int = 
         print(f"  {change}")
 
 
+def get_item(ticker_or_name: str):
+    """Get details of a specific item in watchlist."""
+    df = load_watchlist()
+
+    name = resolve_name(ticker_or_name)
+    if not name:
+        return
+
+    if name not in df["name"].values:
+        print(f"[NOT FOUND] {name} is not in watchlist")
+        return
+
+    row = df[df["name"] == name].iloc[0]
+    ticker = get_stock_code(name)
+
+    print(f"[FOUND] {name} ({ticker})")
+    print(f"  - Target price: {int(row['target_price']):,}원")
+    print(f"  - Max units: {int(row['max_units'])}")
+    if pd.notna(row.get('stop_loss_pct')):
+        print(f"  - Stop loss: {row['stop_loss_pct']}%")
+    else:
+        print(f"  - Stop loss: default")
+    print(f"  - Added: {row.get('added_date', 'N/A')}")
+
+
 def list_items():
     """List all items in watchlist."""
     df = load_watchlist()
@@ -251,6 +276,10 @@ def main():
     # list command
     subparsers.add_parser("list", help="List all items in watchlist")
 
+    # get command
+    get_parser = subparsers.add_parser("get", help="Check if item exists in watchlist")
+    get_parser.add_argument("name", type=str, help="Stock name or ticker")
+
     args = parser.parse_args()
 
     if args.command == "add":
@@ -261,6 +290,8 @@ def main():
         update_item(args.name, args.target_price, args.max_units, args.stop_loss)
     elif args.command == "list":
         list_items()
+    elif args.command == "get":
+        get_item(args.name)
     else:
         parser.print_help()
 
