@@ -1770,8 +1770,15 @@ class KiwoomTradingClient(KiwoomAPIClient):
             'api-id': 'ka10001',  # 개별종목 시세
         }
 
+        # NXT 조회 시 종목코드에 _NX 붙여야 함 (API 스펙)
+        # KRX: 039490, NXT: 039490_NX, SOR: 039490_AL
+        if market_type == "NXT":
+            query_code = f"{stock_code}_NX"
+        else:
+            query_code = stock_code
+
         body = {
-            "stk_cd": stock_code,
+            "stk_cd": query_code,
             "dmst_stex_tp": market_type,  # KRX: 정규장, NXT: 대체거래소
         }
 
