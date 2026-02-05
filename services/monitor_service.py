@@ -23,6 +23,7 @@ WATCHLIST_XLSX = WATCHLIST_DIR / "watchlist.xlsx"
 SETTINGS_CSV = WATCHLIST_DIR / "settings.csv"
 PURCHASED_STOCKS_FILE = WATCHLIST_DIR / "purchased_stocks.json"
 DAILY_TRIGGERS_FILE = WATCHLIST_DIR / "daily_triggers.json"
+SOLD_TODAY_FILE = WATCHLIST_DIR / "sold_today.json"
 
 # Korea timezone
 KST = ZoneInfo("Asia/Seoul")
@@ -70,8 +71,10 @@ class MonitorService:
         self.purchased_stocks: Dict[str, dict] = {}  # Track purchased stocks
         self._unit_value_cache: int = 0  # Cached unit value
         self._unit_value_time: float = 0  # Cache timestamp
+        self.sold_today: Dict[str, dict] = {}  # Track sold stocks to prevent re-buy
         self._load_purchased_stocks()
         self._load_daily_triggers()
+        self._load_sold_today()
 
     def _load_purchased_stocks(self):
         """Load purchased stocks from JSON file."""
@@ -91,6 +94,34 @@ class MonitorService:
                 json.dump(self.purchased_stocks, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[WARNING] Failed to save purchased stocks: {e}")
+
+    def _load_sold_today(self):
+        """Load sold_today from JSON file (persists across restarts within same day)."""
+        try:
+            if SOLD_TODAY_FILE.exists():
+                with open(SOLD_TODAY_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    saved_date = data.get("date")
+                    today = datetime.now(KST).strftime("%Y-%m-%d")
+                    if saved_date == today:
+                        self.sold_today = data.get("sold", {})
+                        if self.sold_today:
+                            print(f"[INFO] Loaded {len(self.sold_today)} sold stocks from file")
+                    else:
+                        self.sold_today = {}
+        except Exception as e:
+            print(f"[WARNING] Failed to load sold_today: {e}")
+            self.sold_today = {}
+
+    def _save_sold_today(self):
+        """Save sold_today to JSON file."""
+        try:
+            today = datetime.now(KST).strftime("%Y-%m-%d")
+            data = {"date": today, "sold": self.sold_today}
+            with open(SOLD_TODAY_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[WARNING] Failed to save sold_today: {e}")
 
     def _load_daily_triggers(self):
         """Load daily triggers from JSON file (persists across restarts)."""
@@ -141,6 +172,58 @@ class MonitorService:
     def is_already_purchased(self, symbol: str) -> bool:
         """Check if stock was already purchased."""
         return symbol in self.purchased_stocks
+
+    def sync_and_detect_sold(self, stop_loss_pct: float = None) -> List[str]:
+        """
+        Sync positions from DB and detect any sold stocks.
+
+        Compares positions before and after sync.
+        Any position that was held before but is gone after sync
+        is marked as sold_today to prevent re-buying.
+
+        Returns:
+            List of newly detected sold symbols
+        """
+        if stop_loss_pct is None:
+            stop_loss_pct = self.trading_settings.STOP_LOSS_PCT
+
+        # Get current positions before sync
+        positions_before = set(self.order_service.positions.keys())
+
+        # Sync from DB
+        self.order_service.sync_positions_from_db(stop_loss_pct=stop_loss_pct)
+
+        # Get positions after sync
+        positions_after = set(self.order_service.positions.keys())
+
+        # Detect sold stocks (was held before, not held after)
+        newly_sold = positions_before - positions_after
+
+        for symbol in newly_sold:
+            if symbol not in self.sold_today:
+                self.sold_today[symbol] = {
+                    "sold_at": datetime.now(KST).isoformat(),
+                    "reason": "detected_sold"
+                }
+                print(f"[SOLD] {symbol} detected as sold - will not re-buy today")
+
+        if newly_sold:
+            self._save_sold_today()
+
+        return list(newly_sold)
+
+    def is_sold_today(self, symbol: str) -> bool:
+        """Check if stock was sold today (should not re-buy)."""
+        return symbol in self.sold_today
+
+    def mark_as_sold_today(self, symbol: str, reason: str = "manual"):
+        """Mark a stock as sold today."""
+        self.sold_today[symbol] = {
+            "sold_at": datetime.now(KST).isoformat(),
+            "reason": reason
+        }
+        self._save_sold_today()
+        print(f"[SOLD] {symbol} marked as sold today - will not re-buy")
 
     def clear_purchased_stock(self, symbol: str):
         """Remove stock from purchased list (called when removed from watchlist)."""
@@ -778,6 +861,10 @@ class MonitorService:
         if not self.is_breakout_entry_allowed():
             return False
 
+        # Skip if sold today (manual or stop loss)
+        if self.is_sold_today(symbol):
+            return False
+
         # Check current session
         current_session = self.get_current_session()
         if not current_session:
@@ -843,9 +930,14 @@ class MonitorService:
         - Open price > target price
         - Not already triggered in morning session
         - current_units < max_units (can still buy more)
+        - Not sold today
         """
         symbol = item["ticker"]
         target_price = item["target_price"]
+
+        # Skip if sold today (manual or stop loss)
+        if self.is_sold_today(symbol):
+            return False
 
         # Gap-up is morning session only
         if symbol in self.daily_triggers:
@@ -1283,10 +1375,12 @@ class MonitorService:
         return actions
 
     def reset_daily_triggers(self):
-        """Reset daily triggers (call at start of new trading day)."""
+        """Reset daily triggers and sold_today (call at start of new trading day)."""
         self.daily_triggers = {}
         self._save_daily_triggers()  # Persist to file
-        print("[INFO] Daily triggers reset")
+        self.sold_today = {}
+        self._save_sold_today()
+        print("[INFO] Daily triggers and sold_today reset")
 
     def run_monitoring_cycle(self) -> dict:
         """

@@ -409,8 +409,8 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     print(f"Breakout: 8:00-8:05, 9:00-9:10, 14:30-15:20 | Pyramid: 19:55-20:00{active_marker}")
     print("=" * 82)
 
-    # Header - show units info
-    print(f"{'CODE':<8} {'NAME':<12} {'TARGET':>12} {'CURRENT':>12} {'DIFF':>10} {'UNITS':>8} {'STATUS':>8}")
+    # Header - P/L% for held positions, TO_BRK for watchlist items
+    print(f"{'CODE':<8} {'NAME':<12} {'TARGET':>12} {'CURRENT':>12} {'P/L%':>10} {'UNITS':>8} {'STATUS':>8}")
     print("-" * 82)
 
     # Calculate diff for all items and sort by diff ascending (closest to breakout first)
@@ -424,14 +424,16 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
         if current <= 0:
             current = holdings_prices.get(ticker, {}).get('last', 0)
 
-        # Calculate diff_pct for sorting
+        # Calculate diff_pct for sorting (consistent: current vs reference price)
         if current > 0:
             if ticker in positions:
+                # Held: P/L from entry
                 pos = positions[ticker]
                 entry = pos.get('entry_price', 0)
                 diff_pct = ((current - entry) / entry) * 100 if entry > 0 else 999
             else:
-                diff_pct = ((target - current) / current) * 100
+                # Not held: distance from target (negative = below target)
+                diff_pct = ((current - target) / target) * 100
         else:
             diff_pct = 999  # No price, put at bottom
 
@@ -442,7 +444,7 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
     # Filter to show only items within 5% of target or exceeded
     # For held items: show all (already invested)
-    # For non-held items: show if diff <= 5% or current >= target
+    # For non-held items: show if within 5% of target or above target
     filtered_watchlist = []
     for item, current, diff_pct in watchlist_with_diff:
         ticker = item['ticker']
@@ -451,9 +453,9 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
             # Already held - always show
             filtered_watchlist.append((item, current, diff_pct))
         elif current > 0:
-            # Not held - filter by distance to target
-            dist_to_target = ((target - current) / current) * 100
-            if dist_to_target <= 5 or current >= target:
+            # Not held - filter by distance to target (diff_pct is now current vs target)
+            # Show if diff_pct >= -5% (within 5% below target or above)
+            if diff_pct >= -5:
                 filtered_watchlist.append((item, current, diff_pct))
         # Skip items with no price data
 
@@ -480,6 +482,7 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
         if current > 0:
             if ticker in positions:
+                # Held position: show P/L from entry price
                 pos = positions[ticker]
                 entry = pos.get('entry_price', 0)
                 stop_loss = pos.get('stop_loss_price', 0)
@@ -498,11 +501,14 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
                     pnl_str = "---"
                     status_str = "HOLD"
             else:
-                diff_pct = ((target - current) / current) * 100
+                # Not held: show distance to breakout target
+                # Positive = still below target (needs to rise)
+                # Negative = above target (breakout!)
+                diff_pct = ((current - target) / target) * 100
                 pnl_str = f"{diff_pct:+.2f}%"
-                if diff_pct <= 0:
+                if diff_pct >= 0:
                     status_str = "BREAK"
-                elif diff_pct <= 1:
+                elif diff_pct >= -1:
                     status_str = "NEAR"
                 else:
                     status_str = "WAIT"
@@ -721,9 +727,7 @@ def run_trading_loop():
         print(f"  [WARN] Holdings sync failed: {e}")
 
     print("[Holdings Sync] Loading positions from holdings DB...")
-    synced = monitor.order_service.sync_positions_from_db(
-        stop_loss_pct=monitor.trading_settings.STOP_LOSS_PCT
-    )
+    monitor.sync_and_detect_sold(stop_loss_pct=monitor.trading_settings.STOP_LOSS_PCT)
     existing_positions = monitor.order_service.get_open_positions()
     if existing_positions:
         print(f"  Monitoring {len(existing_positions)} positions for stop loss")
@@ -777,9 +781,7 @@ def run_trading_loop():
             print(f"[EXECUTION] Holdings sync failed: {e}")
 
         print("[EXECUTION] Re-syncing positions from DB...")
-        monitor.order_service.sync_positions_from_db(
-            stop_loss_pct=monitor.trading_settings.STOP_LOSS_PCT
-        )
+        monitor.sync_and_detect_sold(stop_loss_pct=monitor.trading_settings.STOP_LOSS_PCT)
 
         # 새 포지션이 추가되었으면 poller에도 추가
         new_positions = monitor.order_service.get_open_positions()
@@ -883,9 +885,8 @@ def run_trading_loop():
                     conn = get_connection()
                     sync_holdings_from_kiwoom(conn)
                     conn.close()
-                    monitor.order_service.sync_positions_from_db(
-                        stop_loss_pct=monitor.trading_settings.STOP_LOSS_PCT
-                    )
+                    # Sync positions and detect any manually sold stocks
+                    monitor.sync_and_detect_sold(stop_loss_pct=monitor.trading_settings.STOP_LOSS_PCT)
                     last_holdings_sync_time = current_time
                 except Exception as e:
                     print(f"[SYNC] Periodic holdings sync failed: {e}")
