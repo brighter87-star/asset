@@ -5,7 +5,7 @@ Monitor service for price monitoring and trading strategy execution.
 import json
 import os
 import pandas as pd
-from datetime import datetime, time
+from datetime import datetime, time, date
 from pathlib import Path
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
