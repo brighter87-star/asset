@@ -234,7 +234,7 @@ class MonitorService:
             added_date: Date string when added to watchlist (YYYY-MM-DD or similar)
 
         Returns:
-            True if there's a sell record after added_date
+            True if there's a sell record after added_date (EXPIRED status)
         """
         if not added_date:
             return False
@@ -254,10 +254,33 @@ class MonitorService:
             else:
                 return False  # Can't parse date
 
-            # Check trade history for sells after added_date
+            today = date.today()
+
+            # 1. Check sold_today (real-time tracking, no DB sync needed)
+            # If added_date == today and symbol in sold_today → still expired
+            # (user would need to update target_price to reset)
+            if symbol in self.sold_today:
+                # sold_today has today's sells - always counts as expired
+                # unless user updates target_price (which sets added_date = today AFTER sell)
+                if added_dt < today:
+                    return True  # added before today, sold today → expired
+                # If added_dt == today, we need to check if sold_today was before the update
+                # Since we can't know exact update time, assume user updated AFTER seeing the loss
+                # So if added_date == today, user has acknowledged and reset it → not expired
+                # But if there's a sell in sold_today and we're checking, it means the sale
+                # happened during this session. If added_date was already today (pre-set),
+                # then user set it today morning BEFORE the trade → still expired
+                # To be safe, if sold_today has this symbol, mark as expired unless
+                # we explicitly know user updated after the sell.
+                # Since sold_today tracks real-time, if it's there, it's today's sell.
+                return True
+
+            # 2. Check DB for historical sells (after added_date)
             conn = get_connection()
             try:
                 with conn.cursor() as cur:
+                    # Use >= to catch same-day sells (trade_date == added_date)
+                    # but only for dates before today (since sold_today handles today)
                     cur.execute("""
                         SELECT COUNT(*) FROM account_trade_history
                         WHERE REPLACE(stk_cd, 'A', '') = %s

@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 
 from db.connection import get_connection
-from services.kiwoom_service import KiwoomTradingClient, get_stock_name, sync_holdings_from_kiwoom
+from services.kiwoom_service import KiwoomTradingClient, get_stock_name, sync_holdings_from_kiwoom, sync_trade_history_from_kiwoom
 from services.monitor_service import MonitorService
 from services.trade_logger import trade_logger
 from services.price_service import RestPricePoller, KiwoomWebSocketClient
@@ -475,7 +475,7 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
 
             # Status
             if monitor.is_sold_after_added(item):
-                status_str = "SOLD"
+                status_str = "EXPIRD"  # 오늘 매매 후 손절된 종목 (목표가 수정시 리셋)
             elif diff_pct >= 0:
                 status_str = "BREAK"
             elif diff_pct >= -1:
@@ -893,17 +893,21 @@ def run_trading_loop():
                         print(f"  + Adding {ticker} to price monitor")
                         price_source.subscribe([ticker])
 
-            # Periodic holdings sync (backup for WebSocket failures)
+            # Periodic holdings & trade history sync (backup for WebSocket failures)
             if current_time - last_holdings_sync_time >= HOLDINGS_SYNC_INTERVAL:
                 try:
                     conn = get_connection()
+                    # Sync holdings
                     sync_holdings_from_kiwoom(conn)
+                    # Sync today's trade history (for EXPIRED status detection)
+                    today_str = datetime.now().strftime("%Y%m%d")
+                    sync_trade_history_from_kiwoom(conn, start_date=today_str)
                     conn.close()
                     # Sync positions and detect any manually sold stocks
                     monitor.sync_and_detect_sold(stop_loss_pct=monitor.trading_settings.STOP_LOSS_PCT)
                     last_holdings_sync_time = current_time
                 except Exception as e:
-                    print(f"[SYNC] Periodic holdings sync failed: {e}")
+                    print(f"[SYNC] Periodic sync failed: {e}")
 
             # Get current prices
             prices = price_source.get_prices()

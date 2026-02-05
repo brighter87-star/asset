@@ -169,10 +169,12 @@ def update_item(ticker_or_name: str, target_price: int = None, max_units: int = 
 
     # Track changes
     changes = []
+    target_changed = False
     if target_price is not None:
         old_val = int(old_row["target_price"])
         df.loc[idx, "target_price"] = target_price
         changes.append(f"target: {old_val:,}원 → {target_price:,}원")
+        target_changed = True
     if max_units is not None:
         old_val = int(old_row["max_units"])
         df.loc[idx, "max_units"] = max_units
@@ -187,6 +189,11 @@ def update_item(ticker_or_name: str, target_price: int = None, max_units: int = 
         print(f"[WARN] No changes specified for {name}")
         print(f"  Current: target={int(old_row['target_price']):,}원, max_units={int(old_row['max_units'])}")
         return
+
+    # Update added_date when target_price changes (resets expired status)
+    if target_changed:
+        df.loc[idx, "added_date"] = str(date.today())
+        changes.append(f"added_date: {date.today()} (reset)")
 
     save_watchlist(df)
     print(f"[OK] Updated {name}")
