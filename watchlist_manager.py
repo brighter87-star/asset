@@ -112,7 +112,14 @@ def add_item(ticker_or_name: str, target_price: int, max_units: int = 1, stop_lo
 
     # Check if already exists
     if name in df["name"].values:
+        existing = df[df["name"] == name].iloc[0]
         print(f"[WARN] {name} already in watchlist. Use 'update' to modify.")
+        print(f"  Current settings:")
+        print(f"    - Target price: {int(existing['target_price']):,}원")
+        print(f"    - Max units: {int(existing['max_units'])}")
+        if pd.notna(existing.get('stop_loss_pct')):
+            print(f"    - Stop loss: {existing['stop_loss_pct']}%")
+        print(f"    - Added: {existing.get('added_date', 'N/A')}")
         return
 
     new_row = {
@@ -220,7 +227,7 @@ def main():
     # update command
     update_parser = subparsers.add_parser("update", help="Update item in watchlist")
     update_parser.add_argument("name", type=str, help="Stock name or ticker")
-    update_parser.add_argument("--target", type=int, help="New target price (원)")
+    update_parser.add_argument("target_price", type=int, nargs="?", help="New target price (원)")
     update_parser.add_argument("--max-units", type=int, help="New max units")
     update_parser.add_argument("--stop-loss", type=float, help="New stop loss %")
 
@@ -234,7 +241,7 @@ def main():
     elif args.command == "remove":
         remove_item(args.name)
     elif args.command == "update":
-        update_item(args.name, args.target, args.max_units, args.stop_loss)
+        update_item(args.name, args.target_price, args.max_units, args.stop_loss)
     elif args.command == "list":
         list_items()
     else:
