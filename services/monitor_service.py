@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+from db.connection import get_connection
 from services.kiwoom_service import KiwoomTradingClient, get_stock_code, get_stock_name
+from services.lot_service import get_latest_lot
 from services.order_service import OrderService
 from services.trade_logger import trade_logger
 
@@ -1040,10 +1042,11 @@ class MonitorService:
         Execute end-of-day close logic for ALL positions.
 
         Logic:
-        1. ALL positions: If close price is -7% from entry → sell all (stop loss at close)
+        1. ALL positions: If close price is -7% from LIFO lot entry → sell that lot (stop loss at close)
         2. TODAY's entries only (via daily_triggers):
-           - If close > entry: Add 0.5 unit (pyramid)
-           - If close < entry (0% 미만): Sell all (cut loss)
+           - Uses LIFO lot entry price (not position average)
+           - If close > lot entry: Add 0.5 unit (pyramid)
+           - If close <= lot entry (0% 이하): Sell today's lot (cut loss)
 
         Returns dict of {symbol: action_taken}
         """
@@ -1052,28 +1055,45 @@ class MonitorService:
 
         for pos in self.order_service.get_open_positions():
             symbol = pos["symbol"]
-            entry_price = pos.get("entry_price", 0)
-
-            if entry_price <= 0:
-                continue
 
             price_data = self.get_price(symbol)
             if not price_data:
                 continue
 
             current_price = price_data["last"]
-            change_pct = ((current_price / entry_price) - 1) * 100
 
-            # 1. ALL positions: Check -7% stop loss at close
+            # Get latest lot for LIFO-based logic
+            try:
+                conn = get_connection()
+                latest_lot = get_latest_lot(conn, symbol)
+                conn.close()
+            except Exception as e:
+                print(f"[{symbol}] Failed to get latest lot: {e}")
+                latest_lot = None
+
+            if not latest_lot:
+                # No lot found, skip
+                continue
+
+            lot_entry_price = int(latest_lot["avg_purchase_price"])
+            lot_qty = latest_lot["net_quantity"]
+
+            if lot_entry_price <= 0:
+                continue
+
+            change_pct = ((current_price / lot_entry_price) - 1) * 100
+
+            # 1. ALL positions: Check -7% stop loss at close (LIFO lot based)
             if change_pct <= -stop_loss_pct:
                 tick_size = self.client.get_tick_size(current_price)
                 sell_price = current_price - (tick_size * 3)
-                print(f"[{symbol}] CLOSE STOP: {change_pct:+.2f}% <= -{stop_loss_pct}% - SELL @ {sell_price:,}원")
+                print(f"[{symbol}] CLOSE STOP (lot): {change_pct:+.2f}% <= -{stop_loss_pct}% - SELL {lot_qty}주 @ {sell_price:,}원")
 
                 result = self.order_service.execute_sell(
                     symbol=symbol,
                     price=sell_price,
-                    reason="close_stop_loss",
+                    reason="close_stop_loss_lot",
+                    sell_qty=lot_qty,  # Sell the specific lot quantity
                 )
 
                 if result:
@@ -1082,13 +1102,13 @@ class MonitorService:
                     actions[symbol] = "close_stop_loss_failed"
                 continue  # Skip other logic for this symbol
 
-            # 2. TODAY's entries only: pyramid or cut loss
+            # 2. TODAY's entries only: pyramid or cut loss (LIFO lot based)
             if symbol not in self.daily_triggers:
                 continue
 
-            if current_price > entry_price:
-                # Profitable - pyramid
-                print(f"[{symbol}] Close {current_price:,}원 > Entry {entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
+            if current_price > lot_entry_price:
+                # Profitable (>0%) - pyramid
+                print(f"[{symbol}] Close {current_price:,}원 > Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
 
                 # Find watchlist item for stop_loss_pct
                 watchlist_item = next(
@@ -1110,15 +1130,16 @@ class MonitorService:
                     actions[symbol] = "pyramid_failed"
 
             else:
-                # Loss (0% 미만) - sell all
+                # Loss (0% 이하) - sell today's lot
                 tick_size = self.client.get_tick_size(current_price)
                 sell_price = current_price - (tick_size * 3)
-                print(f"[{symbol}] Close {current_price:,}원 <= Entry {entry_price:,}원 ({change_pct:+.2f}%) - SELL @ {sell_price:,}원")
+                print(f"[{symbol}] Close {current_price:,}원 <= Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - SELL {lot_qty}주 @ {sell_price:,}원")
 
                 result = self.order_service.execute_sell(
                     symbol=symbol,
                     price=sell_price,
-                    reason="close_below_entry",
+                    reason="close_below_lot_entry",
+                    sell_qty=lot_qty,  # Sell only today's lot
                 )
 
                 if result:
