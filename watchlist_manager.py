@@ -3,15 +3,18 @@ Watchlist Manager - Add/remove items from watchlist with auto-dating.
 
 Usage:
     python watchlist_manager.py add 삼성전자 85000 --max-units 2    # Add by name
-    python watchlist_manager.py add 005930 85000                     # Add by ticker (converts to name)
+    python watchlist_manager.py add 005930 85000 --date 2/6         # Add with specific date
+    python watchlist_manager.py add 삼성전자 85000 --date 2월6일    # Korean date format
     python watchlist_manager.py remove 삼성전자                       # Remove by name
     python watchlist_manager.py update 삼성전자 --target 90000       # Update target price
+    python watchlist_manager.py update 삼성전자 --date 2/7           # Update date only
     python watchlist_manager.py list                                 # List all items
 """
 
 import argparse
+import re
 import pandas as pd
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 from services.kiwoom_service import get_stock_code, get_stock_name
@@ -19,28 +22,56 @@ from services.kiwoom_service import get_stock_code, get_stock_name
 WATCHLIST_PATH = Path(__file__).parent / "watchlist.csv"
 
 
-def get_effective_added_date() -> date:
+def parse_flexible_date(date_str: str) -> date:
     """
-    Get the effective added_date based on current time.
+    Parse date from various flexible formats.
 
-    - Before market close (20:00): returns today
-    - After market close (20:00): returns next trading day
+    Supported formats:
+    - 2/6, 02/6, 2/06, 02/06
+    - 2-6, 02-6, 2-06, 02-06
+    - 2.6, 02.6, 2.06, 02.06
+    - 2월6일, 02월06일, 2월 6일
+    - 2026-02-06 (ISO format)
 
-    This ensures that editing watchlist after market close sets the date
-    to the next trading day, so EXPIRED status from today's sell is cleared.
+    Returns date object. Year defaults to current year.
     """
-    now = datetime.now()
-    today = date.today()
+    date_str = date_str.strip()
+    current_year = date.today().year
 
-    # If after market close (20:00), set to next trading day
-    if now.time() >= time(20, 0):
-        next_date = today + timedelta(days=1)
-        # Skip weekends
-        while next_date.weekday() >= 5:  # Saturday=5, Sunday=6
-            next_date += timedelta(days=1)
-        return next_date
+    # ISO format: 2026-02-06
+    if re.match(r'^\d{4}-\d{1,2}-\d{1,2}$', date_str):
+        parts = date_str.split('-')
+        return date(int(parts[0]), int(parts[1]), int(parts[2]))
 
-    return today
+    # Korean format: 2월6일, 02월 06일, etc.
+    korean_match = re.match(r'^(\d{1,2})\s*월\s*(\d{1,2})\s*일?$', date_str)
+    if korean_match:
+        month = int(korean_match.group(1))
+        day = int(korean_match.group(2))
+        return date(current_year, month, day)
+
+    # Slash format: 2/6, 02/06
+    slash_match = re.match(r'^(\d{1,2})/(\d{1,2})$', date_str)
+    if slash_match:
+        month = int(slash_match.group(1))
+        day = int(slash_match.group(2))
+        return date(current_year, month, day)
+
+    # Dash format: 2-6, 02-06
+    dash_match = re.match(r'^(\d{1,2})-(\d{1,2})$', date_str)
+    if dash_match:
+        month = int(dash_match.group(1))
+        day = int(dash_match.group(2))
+        return date(current_year, month, day)
+
+    # Dot format: 2.6, 02.06
+    dot_match = re.match(r'^(\d{1,2})\.(\d{1,2})$', date_str)
+    if dot_match:
+        month = int(dot_match.group(1))
+        day = int(dot_match.group(2))
+        return date(current_year, month, day)
+
+    raise ValueError(f"Cannot parse date: '{date_str}'. Use formats like 2/6, 2월6일, 02-06")
 
 
 def get_display_width(text: str) -> int:
@@ -126,8 +157,8 @@ def resolve_name(ticker_or_name: str) -> str:
     return input_str
 
 
-def add_item(ticker_or_name: str, target_price: int, max_units: int = 1, stop_loss_pct: float = None):
-    """Add item to watchlist with auto-dated added_date."""
+def add_item(ticker_or_name: str, target_price: int, max_units: int = 1, stop_loss_pct: float = None, added_date: date = None):
+    """Add item to watchlist."""
     df = load_watchlist()
 
     name = resolve_name(ticker_or_name)
@@ -146,7 +177,7 @@ def add_item(ticker_or_name: str, target_price: int, max_units: int = 1, stop_lo
         print(f"    - Added: {existing.get('added_date', 'N/A')}")
         return
 
-    effective_date = get_effective_added_date()
+    effective_date = added_date if added_date else date.today()
     new_row = {
         "name": name,
         "target_price": target_price,
@@ -177,7 +208,7 @@ def remove_item(ticker_or_name: str):
     print(f"[OK] Removed {name} from watchlist")
 
 
-def update_item(ticker_or_name: str, target_price: int = None, max_units: int = None, stop_loss_pct: float = None):
+def update_item(ticker_or_name: str, target_price: int = None, max_units: int = None, stop_loss_pct: float = None, added_date: date = None):
     """Update existing item in watchlist."""
     df = load_watchlist()
 
@@ -194,12 +225,10 @@ def update_item(ticker_or_name: str, target_price: int = None, max_units: int = 
 
     # Track changes
     changes = []
-    target_changed = False
     if target_price is not None:
         old_val = int(old_row["target_price"])
         df.loc[idx, "target_price"] = target_price
         changes.append(f"target: {old_val:,}원 → {target_price:,}원")
-        target_changed = True
     if max_units is not None:
         old_val = int(old_row["max_units"])
         df.loc[idx, "max_units"] = max_units
@@ -209,18 +238,15 @@ def update_item(ticker_or_name: str, target_price: int = None, max_units: int = 
         old_str = f"{old_val}%" if pd.notna(old_val) else "default"
         df.loc[idx, "stop_loss_pct"] = stop_loss_pct
         changes.append(f"stop_loss: {old_str} → {stop_loss_pct}%")
+    if added_date is not None:
+        old_val = old_row.get("added_date", "N/A")
+        df.loc[idx, "added_date"] = str(added_date)
+        changes.append(f"added_date: {old_val} → {added_date}")
 
     if not changes:
         print(f"[WARN] No changes specified for {name}")
-        print(f"  Current: target={int(old_row['target_price']):,}원, max_units={int(old_row['max_units'])}")
+        print(f"  Current: target={int(old_row['target_price']):,}원, max_units={int(old_row['max_units'])}, added={old_row.get('added_date', 'N/A')}")
         return
-
-    # Update added_date when target_price changes (resets expired status)
-    # After market close (20:00), set to next trading day
-    if target_changed:
-        effective_date = get_effective_added_date()
-        df.loc[idx, "added_date"] = str(effective_date)
-        changes.append(f"added_date: {effective_date} (reset)")
 
     save_watchlist(df)
     print(f"[OK] Updated {name}")
@@ -294,7 +320,8 @@ def main():
     add_parser.add_argument("name", type=str, help="Stock name or ticker (e.g., 삼성전자 or 005930)")
     add_parser.add_argument("target_price", type=int, help="Target price for breakout (원)")
     add_parser.add_argument("--max-units", type=int, default=1, help="Max units to buy (default: 1)")
-    add_parser.add_argument("--stop-loss", type=float, help="Custom stop loss %")
+    add_parser.add_argument("--stop-loss", type=float, help="Custom stop loss %%")
+    add_parser.add_argument("--date", "-d", type=str, help="Added date (e.g., 2/6, 2월6일, 02-06). Default: today")
 
     # remove command
     remove_parser = subparsers.add_parser("remove", help="Remove item from watchlist")
@@ -305,7 +332,8 @@ def main():
     update_parser.add_argument("name", type=str, help="Stock name or ticker")
     update_parser.add_argument("target_price", type=int, nargs="?", help="New target price (원)")
     update_parser.add_argument("--max-units", type=int, help="New max units")
-    update_parser.add_argument("--stop-loss", type=float, help="New stop loss %")
+    update_parser.add_argument("--stop-loss", type=float, help="New stop loss %%")
+    update_parser.add_argument("--date", "-d", type=str, help="New added date (e.g., 2/6, 2월6일, 02-06)")
 
     # list command
     subparsers.add_parser("list", help="List all items in watchlist")
@@ -317,11 +345,25 @@ def main():
     args = parser.parse_args()
 
     if args.command == "add":
-        add_item(args.name, args.target_price, args.max_units, args.stop_loss)
+        added_date = None
+        if args.date:
+            try:
+                added_date = parse_flexible_date(args.date)
+            except ValueError as e:
+                print(f"[ERROR] {e}")
+                return
+        add_item(args.name, args.target_price, args.max_units, args.stop_loss, added_date)
     elif args.command == "remove":
         remove_item(args.name)
     elif args.command == "update":
-        update_item(args.name, args.target_price, args.max_units, args.stop_loss)
+        added_date = None
+        if args.date:
+            try:
+                added_date = parse_flexible_date(args.date)
+            except ValueError as e:
+                print(f"[ERROR] {e}")
+                return
+        update_item(args.name, args.target_price, args.max_units, args.stop_loss, added_date)
     elif args.command == "list":
         list_items()
     elif args.command == "get":
