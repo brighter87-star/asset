@@ -317,6 +317,8 @@ class OrderService:
         target_price: int,
         is_initial: bool = True,
         stop_loss_pct: Optional[float] = None,
+        order_type: str = "0",
+        use_after_hours_price: bool = False,
     ) -> Optional[dict]:
         """
         Execute buy order (신용매수).
@@ -326,12 +328,20 @@ class OrderService:
             target_price: Target price (before tick buffer)
             is_initial: True for first buy (0.5 unit), False for pyramid (0.5 unit)
             stop_loss_pct: Custom stop loss %, or use default
+            order_type: 매매구분 (0: 보통, 62: 시간외단일가)
+            use_after_hours_price: True면 종가×1.1 (시간외단일가 상한가)로 주문
 
         Returns:
             Order result or None if failed
         """
-        # Calculate buy price with tick buffer
-        buy_price = self.add_tick_buffer(target_price)
+        # Calculate buy price
+        if use_after_hours_price:
+            # 시간외단일가: 종가 × 1.1 (상한가)
+            buy_price = int(target_price * 1.1)
+            print(f"[{symbol}] 시간외단일가 상한가 주문: {target_price:,} × 1.1 = {buy_price:,}원")
+        else:
+            # 일반: tick buffer 적용
+            buy_price = self.add_tick_buffer(target_price)
 
         # Calculate shares (half unit each time)
         shares = self.calculate_shares(buy_price)
@@ -365,7 +375,7 @@ class OrderService:
 
         try:
             # 1차: 신용매수 시도
-            result = self.client.buy_order(symbol, shares, buy_price, use_credit=True)
+            result = self.client.buy_order(symbol, shares, buy_price, order_type=order_type, use_credit=True)
 
         except CreditLimitError as e:
             # 신용한도 초과 종목 → 현금매수로 재시도
@@ -395,7 +405,7 @@ class OrderService:
             try:
                 use_credit = False
                 trade_logger.log_order_attempt(symbol, "BUY", shares, buy_price, "CASH", reason)
-                result = self.client.buy_order(symbol, shares, buy_price, use_credit=False)
+                result = self.client.buy_order(symbol, shares, buy_price, order_type=order_type, use_credit=False)
             except Exception as cash_error:
                 trade_logger.log_order_result(
                     symbol, "BUY", shares, buy_price,
