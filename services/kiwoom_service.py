@@ -1737,6 +1737,123 @@ class KiwoomTradingClient(KiwoomAPIClient):
         else:
             return 1000
 
+    def get_after_hours_price(self, stock_code: str, _retry: bool = True) -> Dict[str, Any]:
+        """
+        시간외단일가 시세 조회 (REST API - ka10087)
+
+        시간외단일가 시간대(15:40~16:00, 17:30~18:00)에 사용.
+
+        Args:
+            stock_code: 종목코드 (6자리)
+            _retry: 토큰 만료 시 재시도 여부 (내부용)
+
+        Returns:
+            dict: {
+                "stock_code": "005930",
+                "last": 164300,           # 시간외단일가 현재가
+                "change": 13900,          # 전일대비
+                "change_pct": 9.24,       # 등락률
+                "volume": 25211212,       # 누적거래량
+                "bid_price": 164200,      # 매수호가1
+                "ask_price": 164400,      # 매도호가1
+                "bid_qty": 1000,          # 매수호가잔량
+                "ask_qty": 500,           # 매도호가잔량
+                "market": "AFTER_HOURS",
+            }
+        """
+        token = self.get_access_token()
+
+        url = f"{self.base_url}/api/dostk/stkinfo"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json; charset=UTF-8',
+            'api-id': 'ka10087',  # 시간외단일가요청
+        }
+
+        body = {
+            "stk_cd": stock_code,
+        }
+
+        try:
+            self._wait_for_rate_limit()
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            return_code = result.get("return_code")
+            return_msg = result.get("return_msg", "")
+
+            # Token expired error: retry with new token
+            if return_code == 8005 or "8005" in str(return_msg) or ("Token" in return_msg and "유효" in return_msg):
+                if _retry:
+                    print(f"[TOKEN] Token expired, refreshing and retrying...")
+                    self.refresh_token()
+                    return self.get_after_hours_price(stock_code, _retry=False)
+                else:
+                    raise Exception(f"API error: {return_msg}")
+
+            if return_code not in (0, None):
+                raise Exception(f"API error: {return_msg}")
+
+            def parse_price(val):
+                """가격 문자열 파싱 (+/-부호 제거)"""
+                if not val:
+                    return 0
+                val_str = str(val).replace("+", "").replace("-", "")
+                try:
+                    return int(val_str)
+                except ValueError:
+                    return 0
+
+            def parse_float(val):
+                """실수 문자열 파싱"""
+                if not val:
+                    return 0.0
+                val_str = str(val).replace("+", "").replace("-", "")
+                try:
+                    return float(val_str)
+                except ValueError:
+                    return 0.0
+
+            # 부호 판단 (2: 상승, 5: 하락)
+            pre_sig = result.get("ovt_sigpric_pred_pre_sig", "")
+            change = parse_price(result.get("ovt_sigpric_pred_pre", "0"))
+            if pre_sig == "5":
+                change = -change
+
+            return {
+                "stock_code": stock_code,
+                "last": parse_price(result.get("ovt_sigpric_cur_prc")),
+                "change": change,
+                "change_pct": parse_float(result.get("ovt_sigpric_flu_rt")),
+                "volume": parse_price(result.get("ovt_sigpric_acc_trde_qty")),
+                "bid_price": parse_price(result.get("ovt_sigpric_buy_bid_1")),
+                "ask_price": parse_price(result.get("ovt_sigpric_sel_bid_1")),
+                "bid_qty": parse_price(result.get("ovt_sigpric_buy_bid_qty_1")),
+                "ask_qty": parse_price(result.get("ovt_sigpric_sel_bid_qty_1")),
+                "total_bid_qty": parse_price(result.get("ovt_sigpric_buy_bid_tot_req")),
+                "total_ask_qty": parse_price(result.get("ovt_sigpric_sel_bid_tot_req")),
+                "market": "AFTER_HOURS",
+            }
+
+        except Exception as e:
+            print(f"[ERROR] Failed to get after-hours price for {stock_code}: {e}")
+            return {
+                "stock_code": stock_code,
+                "last": 0,
+                "change": 0,
+                "change_pct": 0.0,
+                "volume": 0,
+                "bid_price": 0,
+                "ask_price": 0,
+                "bid_qty": 0,
+                "ask_qty": 0,
+                "total_bid_qty": 0,
+                "total_ask_qty": 0,
+                "market": "AFTER_HOURS",
+            }
+
     def get_stock_price(self, stock_code: str, market_type: str = "KRX", _retry: bool = True) -> Dict[str, Any]:
         """
         개별 종목 현재가 조회 (REST API)

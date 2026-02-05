@@ -336,10 +336,11 @@ class OrderService:
         """
         # Calculate buy price
         if use_after_hours_price:
-            # 시간외단일가: 종가 × 1.1 후 호가단위로 내림 (상한가)
+            # 시간외단일가: 상한가 (종가 × 1.1)로 주문 - 체결 확보
+            # 상한가 = floor(종가 × 1.1 / tick_size) × tick_size
+            tick_size = self.client.get_tick_size(target_price)
             raw_upper_limit = target_price * 1.1
-            tick_size = self.client.get_tick_size(int(raw_upper_limit))
-            buy_price = int(raw_upper_limit // tick_size) * tick_size  # 호가단위로 내림
+            buy_price = int(raw_upper_limit // tick_size) * tick_size
             actual_pct = ((buy_price / target_price) - 1) * 100
             print(f"[{symbol}] 시간외단일가 상한가 주문: {target_price:,} → {buy_price:,}원 (+{actual_pct:.2f}%)")
         else:

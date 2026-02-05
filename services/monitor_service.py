@@ -583,14 +583,14 @@ class MonitorService:
         - NXT: 8:00 ~ 20:00
 
         Breakout windows:
-        - 8:00 ~ 8:05 (NXT morning open) - 0.5 unit 돌파 매수
+        - 8:00 ~ 8:02 (NXT morning open) - 0.5 unit 돌파 매수
         - 9:00 ~ 9:10 (KRX morning open) - 0.5 unit 돌파 매수
-        - 17:50 ~ 18:00 (시간외단일가) - NXT 불가 종목 추가 0.5 unit
         - 19:30 ~ 20:00 (NXT evening) - NXT 가능 종목 추가 0.5 unit
           (저녁에 첫 돌파면 1 unit)
 
         Morning breakout is ONE time only (NXT or KRX, whichever triggers first).
-        Additional 0.5 unit is added in after_hours (NXT불가) or evening (NXT가능).
+        8:03 ~ 9:00 사이는 매수하지 않음.
+        Additional 0.5 unit is added in evening (NXT가능 종목).
 
         Outside these windows, watchlist is monitored but no buy execution.
         """
@@ -601,17 +601,13 @@ class MonitorService:
 
         current_time = now_kst.time()
 
-        # NXT morning open: 8:00 ~ 8:05
+        # NXT morning open: 8:00 ~ 8:02
         nxt_morning_start = time(8, 0)
-        nxt_morning_end = time(8, 5)
+        nxt_morning_end = time(8, 2)
 
         # KRX morning open: 9:00 ~ 9:10
         krx_morning_start = time(9, 0)
         krx_morning_end = time(9, 10)
-
-        # 시간외단일가 마지막 타임: 17:50 ~ 18:00 (NXT 불가 종목 추가 매수)
-        after_hours_start = time(17, 50)
-        after_hours_end = time(18, 0)
 
         # NXT evening close: 19:30 ~ 20:00 (NXT 가능 종목 추가 매수)
         nxt_evening_start = time(19, 30)
@@ -619,20 +615,18 @@ class MonitorService:
 
         in_nxt_morning = nxt_morning_start <= current_time < nxt_morning_end
         in_krx_morning = krx_morning_start <= current_time < krx_morning_end
-        in_after_hours = after_hours_start <= current_time < after_hours_end
         in_nxt_evening = nxt_evening_start <= current_time < nxt_evening_end
 
-        return in_nxt_morning or in_krx_morning or in_after_hours or in_nxt_evening
+        return in_nxt_morning or in_krx_morning or in_nxt_evening
 
     def get_current_session(self) -> Optional[str]:
         """
         Get current trading session name.
 
         Returns:
-            "morning" for 8:00~9:10 (NXT + KRX open) - 돌파 매수
-            "after_hours" for 17:50~18:00 (시간외단일가) - NXT 불가 종목 추가 매수
+            "morning" for 8:00~8:02 or 9:00~9:10 - 돌파 매수
             "evening" for 19:30~20:00 (NXT close) - NXT 가능 종목 추가 매수
-            None if not in any session
+            None if not in any session (including 8:03~9:00)
         """
         now_kst = self.get_current_time_kst()
 
@@ -641,13 +635,12 @@ class MonitorService:
 
         current_time = now_kst.time()
 
-        # Morning: 8:00 ~ 9:10 (NXT 8:00-8:05 + KRX 9:00-9:10)
-        if time(8, 0) <= current_time < time(9, 10):
+        # Morning: 8:00 ~ 8:02 (NXT) or 9:00 ~ 9:10 (KRX)
+        # 8:03 ~ 9:00 사이는 매수하지 않음
+        if time(8, 0) <= current_time < time(8, 2):
             return "morning"
-
-        # After-hours: 17:50 ~ 18:00 (시간외단일가 마지막 타임)
-        if time(17, 50) <= current_time < time(18, 0):
-            return "after_hours"
+        if time(9, 0) <= current_time < time(9, 10):
+            return "morning"
 
         # Evening: 19:30 ~ 20:00 (NXT close)
         if time(19, 30) <= current_time < time(20, 0):
@@ -665,15 +658,15 @@ class MonitorService:
         current_time = now_kst.time()
         return time(19, 30) <= current_time < time(20, 0)
 
-    def is_after_hours_session(self) -> bool:
-        """Check if we're in 시간외단일가 session (17:50 ~ 18:00)."""
+    def is_krx_close_time(self) -> bool:
+        """Check if we're in KRX close time (15:18 ~ 15:20) - for close logic of non-NXT stocks."""
         now_kst = self.get_current_time_kst()
 
         if now_kst.weekday() >= 5:
             return False
 
         current_time = now_kst.time()
-        return time(17, 50) <= current_time < time(18, 0)
+        return time(15, 18) <= current_time < time(15, 20)
 
     def is_nxt_tradable(self, symbol: str) -> bool:
         """
@@ -953,22 +946,10 @@ class MonitorService:
             if self.has_today_position(symbol):
                 return False
 
-        elif current_session == "after_hours":
-            # 시간외단일가: NXT 불가 종목만
-            if self.is_nxt_tradable(symbol):
-                return False  # NXT 가능 종목은 저녁에 매수
-            # Check if already bought in after_hours
-            if symbol in self.daily_triggers and self.daily_triggers[symbol].get("session") == "after_hours":
-                return False
-            # Safety check for first entry
-            if not has_morning_buy and self.has_today_position(symbol):
-                return False
-            # If first buy (no morning buy), will do full 1 unit in execute_entry
-
         elif current_session == "evening":
             # NXT 저녁: NXT 가능 종목만
             if not self.is_nxt_tradable(symbol):
-                return False  # NXT 불가 종목은 시간외단일가에서 매수
+                return False  # NXT 불가 종목은 KRX close(15:18)에서 처리
             # If already bought in evening, skip
             if symbol in self.daily_triggers and self.daily_triggers[symbol].get("session") == "evening":
                 return False
@@ -983,7 +964,7 @@ class MonitorService:
 
         # Check breakout: 현재가 >= 기준가
         if current_price >= target_price:
-            session_name = {"morning": "오전", "after_hours": "시간외단일가", "evening": "NXT저녁"}.get(current_session, current_session)
+            session_name = {"morning": "오전", "evening": "NXT저녁"}.get(current_session, current_session)
             print(f"[{symbol}] BREAKOUT ({session_name}): {current_price:,}원 >= {target_price:,}원")
             return True
 
@@ -1048,17 +1029,11 @@ class MonitorService:
         # Get current session for tracking
         current_session = self.get_current_session() or "morning"
 
-        # 시간외단일가 세션 체크 (17:50~18:00)
-        is_after_hours = current_session == "after_hours"
-
         # 첫 진입 체크 (오늘 이 종목을 아직 안 샀을 때)
         is_first_entry = not self.has_today_position(symbol)
 
         # NXT 저녁 (19:30-20:00)에 "첫 진입"이면 full 1 unit 매수
         is_nxt_evening_first_entry = self.is_nxt_evening_session() and is_first_entry
-
-        # 시간외단일가 (17:50-18:00)에 "첫 진입"이면 full 1 unit 매수
-        is_after_hours_first_entry = is_after_hours and is_first_entry
 
         # 주문 시도 전에 먼저 daily_triggers에 등록 (중복 주문 방지)
         self.daily_triggers[symbol] = {
@@ -1081,23 +1056,12 @@ class MonitorService:
         else:
             entry_price = target_price
 
-        # 시간외단일가: order_type="62", 종가×1.1 상한가 주문
-        order_type = "62" if is_after_hours else "0"
-        use_after_hours_price = is_after_hours
-
-        if is_after_hours_first_entry:
-            print(f"[{symbol}] 시간외단일가 첫 돌파 매수 (1 unit)")
-        elif is_after_hours:
-            print(f"[{symbol}] 시간외단일가 추가 매수 (0.5 unit)")
-
         # First buy (0.5 unit)
         result = self.order_service.execute_buy(
             symbol=symbol,
             target_price=entry_price,
             is_initial=True,
             stop_loss_pct=stop_loss_pct,
-            order_type=order_type,
-            use_after_hours_price=use_after_hours_price,
         )
 
         if result:
@@ -1107,9 +1071,7 @@ class MonitorService:
             })
             self._save_daily_triggers()  # Persist to file
 
-            # 첫 진입이면 바로 피라미딩 (full 1 unit)
-            # - NXT 저녁 첫 진입
-            # - 시간외단일가 첫 진입
+            # NXT 저녁 첫 진입이면 바로 피라미딩 (full 1 unit)
             if is_nxt_evening_first_entry:
                 print(f"[{symbol}] NXT evening FIRST entry - adding pyramid for full 1 unit")
                 self.order_service.execute_buy(
@@ -1117,16 +1079,6 @@ class MonitorService:
                     target_price=entry_price,
                     is_initial=False,  # pyramid
                     stop_loss_pct=stop_loss_pct,
-                )
-            elif is_after_hours_first_entry:
-                print(f"[{symbol}] 시간외단일가 FIRST entry - adding pyramid for full 1 unit")
-                self.order_service.execute_buy(
-                    symbol=symbol,
-                    target_price=entry_price,
-                    is_initial=False,  # pyramid
-                    stop_loss_pct=stop_loss_pct,
-                    order_type="62",
-                    use_after_hours_price=True,
                 )
 
             # Mark as purchased to prevent duplicate buys
@@ -1274,7 +1226,13 @@ class MonitorService:
                 continue  # Skip other logic for this symbol
 
             # 2. TODAY's entries only: pyramid or cut loss (LIFO lot based)
+            # 단, 저녁 세션(19:30-20:00)에 매수한 종목은 이미 1 unit 완료이므로 피라미딩 제외
             if symbol not in self.daily_triggers:
+                continue
+
+            # 저녁 세션에서 매수한 종목은 피라미딩/손절 스킵 (이미 1 unit 완료)
+            trigger_session = self.daily_triggers[symbol].get("session", "morning")
+            if trigger_session == "evening":
                 continue
 
             if current_price > lot_entry_price:
@@ -1320,17 +1278,17 @@ class MonitorService:
 
         return actions
 
-    def execute_after_hours_close_logic(self) -> Dict[str, str]:
+    def execute_krx_close_logic(self) -> Dict[str, str]:
         """
-        Execute 시간외단일가 close logic for non-NXT stocks (17:50-18:00).
+        Execute KRX close logic for non-NXT stocks (15:18-15:20).
 
-        Uses order_type="62" (시간외단일가) with 하한가 (종가 -10%).
+        Uses normal limit order (order_type="0") with KRX current price.
 
         Logic:
-        1. ALL non-NXT positions: If -7% from LIFO lot entry → sell at 하한가
+        1. ALL non-NXT positions: If -7% from LIFO lot entry → sell at current - 3 ticks
         2. TODAY's entries only:
-           - If close > lot entry: Add 0.5 unit (pyramid) via 시간외단일가
-           - If close <= lot entry: Sell at 하한가 via 시간외단일가
+           - If current > lot entry: Add 0.5 unit (pyramid)
+           - If current <= lot entry: Sell lot at current - 3 ticks
 
         Returns dict of {symbol: action_taken}
         """
@@ -1342,22 +1300,21 @@ class MonitorService:
 
             # Only process non-NXT stocks
             if self.is_nxt_tradable(symbol):
-                continue  # Skip NXT stocks (handled by execute_close_logic)
+                continue  # Skip NXT stocks (handled by execute_close_logic at 19:58)
 
-            # Get KRX closing price for 시간외단일가
+            # KRX 현재가 조회
             price_data = self.client.get_stock_price(symbol, market_type="KRX")
             if not price_data:
-                print(f"[{symbol}] Failed to get KRX price for after-hours")
+                print(f"[{symbol}] Failed to get KRX price for close")
                 continue
 
             current_price = price_data.get("last", 0)
             if current_price <= 0:
                 continue
 
-            # Calculate 하한가 (종가 -10%), 호가단위로 내림
             tick_size = self.client.get_tick_size(current_price)
-            lower_limit = int((current_price * 0.9) // tick_size) * tick_size
-            print(f"[{symbol}] 시간외단일가 하한가: {current_price:,}원 * 0.9 = {lower_limit:,}원")
+            sell_price = current_price - (tick_size * 3)  # 매도: 현재가 - 3틱
+            print(f"[{symbol}] KRX Close: 현재가 {current_price:,}원, 매도가 {sell_price:,}원")
 
             # Get latest lot for LIFO-based logic
             try:
@@ -1381,20 +1338,19 @@ class MonitorService:
 
             # 1. ALL positions: Check -7% stop loss (LIFO lot based)
             if change_pct <= -stop_loss_pct:
-                print(f"[{symbol}] 시간외단일가 STOP (lot): {change_pct:+.2f}% <= -{stop_loss_pct}% - SELL {lot_qty}주 @ {lower_limit:,}원")
+                print(f"[{symbol}] KRX STOP (lot): {change_pct:+.2f}% <= -{stop_loss_pct}% - SELL {lot_qty}주 @ {sell_price:,}원")
 
                 result = self.order_service.execute_sell(
                     symbol=symbol,
-                    price=lower_limit,
-                    reason="after_hours_stop_loss",
+                    price=sell_price,
+                    reason="krx_close_stop_loss",
                     sell_qty=lot_qty,
-                    order_type="62",  # 시간외단일가
                 )
 
                 if result:
-                    actions[symbol] = "after_hours_stop_loss"
+                    actions[symbol] = "krx_stop_loss"
                 else:
-                    actions[symbol] = "after_hours_stop_loss_failed"
+                    actions[symbol] = "krx_stop_loss_failed"
                 continue
 
             # 2. TODAY's entries only: pyramid or cut loss
@@ -1402,10 +1358,8 @@ class MonitorService:
                 continue
 
             if current_price > lot_entry_price:
-                # Profitable (>0%) - pyramid via 시간외단일가
-                # 시간외단일가 상한가 = 종가 * 1.1
-                upper_limit = int((current_price * 1.1) // tick_size) * tick_size
-                print(f"[{symbol}] 시간외단일가 Close {current_price:,}원 > Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID @ {upper_limit:,}원")
+                # Profitable (>0%) - pyramid
+                print(f"[{symbol}] KRX Close {current_price:,}원 > Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
 
                 watchlist_item = next(
                     (w for w in self.watchlist if w["ticker"] == symbol),
@@ -1418,31 +1372,28 @@ class MonitorService:
                     target_price=current_price,
                     is_initial=False,
                     stop_loss_pct=custom_stop_loss_pct,
-                    order_type="62",  # 시간외단일가
-                    use_after_hours_price=True,
                 )
 
                 if result:
-                    actions[symbol] = "after_hours_pyramid"
+                    actions[symbol] = "krx_pyramid"
                 else:
-                    actions[symbol] = "after_hours_pyramid_failed"
+                    actions[symbol] = "krx_pyramid_failed"
 
             else:
-                # Loss (0% 이하) - sell at 하한가 via 시간외단일가
-                print(f"[{symbol}] 시간외단일가 Close {current_price:,}원 <= Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - SELL {lot_qty}주 @ {lower_limit:,}원")
+                # Loss (0% 이하) - sell lot
+                print(f"[{symbol}] KRX Close {current_price:,}원 <= Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - SELL {lot_qty}주 @ {sell_price:,}원")
 
                 result = self.order_service.execute_sell(
                     symbol=symbol,
-                    price=lower_limit,
-                    reason="after_hours_below_lot_entry",
+                    price=sell_price,
+                    reason="krx_close_below_lot_entry",
                     sell_qty=lot_qty,
-                    order_type="62",  # 시간외단일가
                 )
 
                 if result:
-                    actions[symbol] = "after_hours_sold"
+                    actions[symbol] = "krx_sold"
                 else:
-                    actions[symbol] = "after_hours_sell_failed"
+                    actions[symbol] = "krx_sell_failed"
 
         return actions
 
@@ -1505,15 +1456,15 @@ class MonitorService:
         result["stop_losses"] = stopped
 
         # Execute close logic based on time window
-        # 1. 시간외단일가 (17:50-18:00): non-NXT stocks
-        # 2. NXT close (19:55-20:00): NXT-tradable stocks
-        if self.is_after_hours_session():
-            # 17:50-18:00: 시간외단일가 for non-NXT stocks
-            after_hours_actions = self.execute_after_hours_close_logic()
-            result["close_actions"].update(after_hours_actions)
+        # 1. KRX close (15:18-15:20): non-NXT stocks
+        # 2. NXT close (19:58-20:00): NXT-tradable stocks (오전에 매수한 것만)
+        if self.is_krx_close_time():
+            # 15:18-15:20: KRX close for non-NXT stocks
+            krx_actions = self.execute_krx_close_logic()
+            result["close_actions"].update(krx_actions)
 
-        if self.is_near_nxt_close(5):
-            # 19:55-20:00: NXT close for NXT-tradable stocks
+        if self.is_near_nxt_close(2):
+            # 19:58-20:00: NXT close for NXT-tradable stocks (오전 매수분만)
             nxt_actions = self.execute_close_logic(nxt_only=True)
             result["close_actions"].update(nxt_actions)
 

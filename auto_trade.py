@@ -398,23 +398,27 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     breakout_active = monitor.is_breakout_entry_allowed()
     active_marker = " [ACTIVE]" if breakout_active else ""
 
-    # Check close logic timing (only NXT close for pyramid)
-    near_nxt_close = monitor.is_near_nxt_close(5)
-    close_marker = " [NXT PYRAMID]" if near_nxt_close else ""
+    # Check close logic timing (KRX 15:18 or NXT 19:58)
+    near_nxt_close = monitor.is_near_nxt_close(2)
+    near_krx_close = monitor.is_krx_close_time() if hasattr(monitor, 'is_krx_close_time') else False
+    if near_krx_close:
+        close_marker = " [KRX CLOSE]"
+    elif near_nxt_close:
+        close_marker = " [NXT CLOSE]"
+    else:
+        close_marker = ""
 
     # Show which market prices are being queried (KRX, NXT, or CLOSED)
     price_market = monitor.get_current_market_display()
 
     print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring [{price_market}]{close_marker}")
-    print(f"Breakout: 8:00-8:05, 9:00-9:10, 14:30-15:20 | Pyramid: 19:55-20:00{active_marker}")
+    print(f"Breakout: 8:00-8:02, 9:00-9:10, 19:30-20:00 | Close: 15:18(KRX), 19:58(NXT){active_marker}")
     print("=" * 74)
 
-    # Header - P/L% for held positions, TO_BRK for watchlist items
-    print(f"{'NAME':<14} {'TARGET':>12} {'CURRENT':>12} {'P/L%':>10} {'UNITS':>8} {'STATUS':>8}")
-    print("-" * 74)
+    # Separate held and non-held items
+    held_items = []
+    non_held_items = []
 
-    # Calculate diff for all items and sort by diff ascending (closest to breakout first)
-    watchlist_with_diff = []
     for item in monitor.get_watchlist_filtered():
         ticker = item['ticker']
         target = item['target_price']
@@ -424,104 +428,109 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
         if current <= 0:
             current = holdings_prices.get(ticker, {}).get('last', 0)
 
-        # Calculate diff_pct for sorting (consistent: current vs reference price)
-        if current > 0:
-            if ticker in positions:
-                # Held: P/L from entry
-                pos = positions[ticker]
-                entry = pos.get('entry_price', 0)
-                diff_pct = ((current - entry) / entry) * 100 if entry > 0 else 999
-            else:
-                # Not held: distance from target (negative = below target)
-                diff_pct = ((current - target) / target) * 100
-        else:
-            diff_pct = 999  # No price, put at bottom
-
-        watchlist_with_diff.append((item, current, diff_pct))
-
-    # Sort by diff ascending (closest to target first)
-    watchlist_with_diff.sort(key=lambda x: x[2])
-
-    # Filter to show only items within 5% of target or exceeded
-    # For held items: show all (already invested)
-    # For non-held items: show if within 5% of target or above target
-    filtered_watchlist = []
-    for item, current, diff_pct in watchlist_with_diff:
-        ticker = item['ticker']
-        target = item['target_price']
         if ticker in positions:
-            # Already held - always show
-            filtered_watchlist.append((item, current, diff_pct))
-        elif current > 0:
-            # Not held - filter by distance to target (diff_pct is now current vs target)
-            # Show if diff_pct >= -5% (within 5% below target or above)
-            if diff_pct >= -5:
-                filtered_watchlist.append((item, current, diff_pct))
-        # Skip items with no price data
+            # Held: calculate P/L from entry
+            pos = positions[ticker]
+            entry = pos.get('entry_price', 0)
+            diff_pct = ((current - entry) / entry) * 100 if entry > 0 and current > 0 else 999
+            held_items.append((item, current, diff_pct, pos))
+        else:
+            # Not held: distance from target (negative = below target)
+            diff_pct = ((current - target) / target) * 100 if current > 0 else -999
+            # Filter: show only items within 5% of target or above
+            if current > 0 and diff_pct >= -5:
+                non_held_items.append((item, current, diff_pct))
 
-    # Display filtered items
-    for item, current, _ in filtered_watchlist:
-        ticker = item['ticker']
-        target = item['target_price']
+    # Sort non-held by GAP descending (closest to breakout first = highest diff_pct)
+    non_held_items.sort(key=lambda x: x[2], reverse=True)
 
-        name = item.get('name', '') or get_stock_name(ticker)
-        # Truncate name if display width > 12
-        if get_display_width(name) > 12:
-            truncated = ""
-            for c in name:
-                if get_display_width(truncated + c) > 12:
-                    break
-                truncated += c
-            name = truncated
-        name_display = pad_korean(name, 14, 'left')
+    # Sort held by P/L descending (best performing first)
+    held_items.sort(key=lambda x: x[2], reverse=True)
 
-        # Get current/max units info
-        current_units = monitor.get_current_units(ticker)
-        max_units = item.get('max_units', 1)
-        units_str = f"{current_units:.1f}/{max_units}"
+    # Display non-held watchlist items (GAP column)
+    if non_held_items:
+        print(f"[Watchlist - 미보유] ({len(non_held_items)})")
+        print(f"{'NAME':<14} {'TARGET':>12} {'CURRENT':>12} {'GAP':>10} {'UNITS':>8} {'STATUS':>8}")
+        print("-" * 74)
 
-        if current > 0:
-            if ticker in positions:
-                # Held position: show P/L from entry price
-                pos = positions[ticker]
-                entry = pos.get('entry_price', 0)
-                stop_loss = pos.get('stop_loss_price', 0)
-                if entry > 0:
-                    pnl_pct = ((current - entry) / entry) * 100
-                    pnl_str = f"{pnl_pct:+.2f}%"
-                    if current <= stop_loss:
-                        status_str = "STOP!"
-                    elif pnl_pct <= -5:
-                        status_str = "WARN"
-                    elif pnl_pct > 0:
-                        status_str = "HOLD+"
-                    else:
-                        status_str = "HOLD-"
-                else:
-                    pnl_str = "---"
-                    status_str = "HOLD"
+        for item, current, diff_pct in non_held_items:
+            ticker = item['ticker']
+            target = item['target_price']
+
+            name = item.get('name', '') or get_stock_name(ticker)
+            if get_display_width(name) > 12:
+                truncated = ""
+                for c in name:
+                    if get_display_width(truncated + c) > 12:
+                        break
+                    truncated += c
+                name = truncated
+            name_display = pad_korean(name, 14, 'left')
+
+            current_units = monitor.get_current_units(ticker)
+            max_units = item.get('max_units', 1)
+            units_str = f"{current_units:.1f}/{max_units}"
+
+            gap_str = f"{diff_pct:+.2f}%"
+
+            # Status
+            if monitor.is_sold_after_added(item):
+                status_str = "SOLD"
+            elif diff_pct >= 0:
+                status_str = "BREAK"
+            elif diff_pct >= -1:
+                status_str = "NEAR"
             else:
-                # Not held: show distance to breakout target
-                # Positive = still below target (needs to rise)
-                # Negative = above target (breakout!)
-                diff_pct = ((current - target) / target) * 100
-                pnl_str = f"{diff_pct:+.2f}%"
+                status_str = "WAIT"
 
-                # Check if sold after being added to watchlist
-                if monitor.is_sold_after_added(item):
-                    status_str = "SOLD"
-                elif diff_pct >= 0:
-                    status_str = "BREAK"
-                elif diff_pct >= -1:
-                    status_str = "NEAR"
+            print(f"{name_display} {target:>12,} {current:>12,} {gap_str:>10} {units_str:>8} {status_str:>8}")
+
+        print("=" * 74)
+
+    # Display held watchlist items (P/L% column)
+    if held_items:
+        print(f"\n[Watchlist - 보유중] ({len(held_items)})")
+        print(f"{'NAME':<14} {'TARGET':>12} {'CURRENT':>12} {'P/L%':>10} {'UNITS':>8} {'STATUS':>8}")
+        print("-" * 74)
+
+        for item, current, pnl_pct, pos in held_items:
+            ticker = item['ticker']
+            target = item['target_price']
+
+            name = item.get('name', '') or get_stock_name(ticker)
+            if get_display_width(name) > 12:
+                truncated = ""
+                for c in name:
+                    if get_display_width(truncated + c) > 12:
+                        break
+                    truncated += c
+                name = truncated
+            name_display = pad_korean(name, 14, 'left')
+
+            current_units = monitor.get_current_units(ticker)
+            max_units = item.get('max_units', 1)
+            units_str = f"{current_units:.1f}/{max_units}"
+
+            entry = pos.get('entry_price', 0)
+            stop_loss = pos.get('stop_loss_price', 0)
+
+            if current > 0 and entry > 0:
+                pnl_str = f"{pnl_pct:+.2f}%"
+                if current <= stop_loss:
+                    status_str = "STOP!"
+                elif pnl_pct <= -5:
+                    status_str = "WARN"
+                elif pnl_pct > 0:
+                    status_str = "HOLD+"
                 else:
-                    status_str = "WAIT"
+                    status_str = "HOLD-"
+            else:
+                pnl_str = "---"
+                status_str = "HOLD"
 
             print(f"{name_display} {target:>12,} {current:>12,} {pnl_str:>10} {units_str:>8} {status_str:>8}")
-        else:
-            print(f"{name_display} {target:>12,} {'---':>12} {'---':>10} {units_str:>8} {'LOAD':>8}")
 
-    print("=" * 74)
+        print("=" * 74)
 
     # Show today's purchases section (all stocks with today_qty > 0)
     # Shows regardless of whether bot purchased or user purchased manually
