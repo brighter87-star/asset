@@ -1512,7 +1512,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
         stock_code: str,
         quantity: int,
         price: int,
-        order_type: str = "00",
+        order_type: str = "0",
     ) -> Dict[str, Any]:
         """
         현금 매도 주문 (kt10001 - 주식매도주문)
@@ -1521,7 +1521,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
             stock_code: 종목코드 (6자리)
             quantity: 주문수량
             price: 주문가격 (지정가)
-            order_type: 주문유형 (00: 지정가, 03: 시장가)
+            order_type: 매매구분 (0: 보통, 3: 시장가, 62: 시간외단일가)
 
         Returns:
             dict: 주문 결과
@@ -1537,11 +1537,11 @@ class KiwoomTradingClient(KiwoomAPIClient):
         }
 
         body = {
+            "dmst_stex_tp": "KRX",  # 국내거래소 (KRX/NXT/SOR)
             "stk_cd": stock_code,
-            "buy_sell_tp": "2",  # 2: 매도
-            "ord_tp": order_type,  # 00: 지정가, 03: 시장가
             "ord_qty": str(quantity),
-            "ord_prc": str(price),
+            "ord_uv": str(price),
+            "trde_tp": order_type,  # 0:보통, 3:시장가, 62:시간외단일가
         }
 
         self._wait_for_rate_limit()
@@ -1570,7 +1570,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
         quantity: int,
         price: int,
         loan_dt: str = "",
-        order_type: str = "00",
+        order_type: str = "0",
     ) -> Dict[str, Any]:
         """
         신용 매도 주문 (kt10007 - 신용매도주문)
@@ -1580,7 +1580,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
             quantity: 주문수량
             price: 주문가격 (지정가)
             loan_dt: 대출일자 (YYYYMMDD, 빈값이면 자동)
-            order_type: 주문유형 (00: 지정가, 03: 시장가)
+            order_type: 매매구분 (0: 보통, 3: 시장가, 62: 시간외단일가)
 
         Returns:
             dict: 주문 결과
@@ -1596,11 +1596,11 @@ class KiwoomTradingClient(KiwoomAPIClient):
         }
 
         body = {
+            "dmst_stex_tp": "KRX",  # 국내거래소 (KRX/NXT/SOR)
             "stk_cd": stock_code,
-            "buy_sell_tp": "2",  # 2: 매도
-            "ord_tp": order_type,  # 00: 지정가, 03: 시장가
             "ord_qty": str(quantity),
-            "ord_prc": str(price),
+            "ord_uv": str(price),
+            "trde_tp": order_type,  # 0:보통, 3:시장가, 62:시간외단일가
             "loan_dt": loan_dt,  # 대출일자 (빈값이면 자동)
         }
 

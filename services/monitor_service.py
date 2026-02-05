@@ -1037,16 +1037,18 @@ class MonitorService:
 
         return stopped
 
-    def execute_close_logic(self) -> Dict[str, str]:
+    def execute_close_logic(self, nxt_only: bool = True) -> Dict[str, str]:
         """
-        Execute end-of-day close logic for ALL positions.
+        Execute end-of-day close logic for positions.
 
-        Logic:
-        1. ALL positions: If close price is -7% from LIFO lot entry → sell that lot (stop loss at close)
+        For NXT stocks (19:55-20:00):
+        1. ALL positions: If close price is -7% from LIFO lot entry → sell that lot
         2. TODAY's entries only (via daily_triggers):
-           - Uses LIFO lot entry price (not position average)
            - If close > lot entry: Add 0.5 unit (pyramid)
            - If close <= lot entry (0% 이하): Sell today's lot (cut loss)
+
+        Args:
+            nxt_only: If True, only process NXT-tradable stocks (default)
 
         Returns dict of {symbol: action_taken}
         """
@@ -1055,6 +1057,11 @@ class MonitorService:
 
         for pos in self.order_service.get_open_positions():
             symbol = pos["symbol"]
+
+            # Filter by NXT tradability
+            is_nxt_tradable = self.is_nxt_tradable(symbol)
+            if nxt_only and not is_nxt_tradable:
+                continue  # Skip non-NXT stocks (handled by after_hours logic)
 
             price_data = self.get_price(symbol)
             if not price_data:
@@ -1087,7 +1094,7 @@ class MonitorService:
             if change_pct <= -stop_loss_pct:
                 tick_size = self.client.get_tick_size(current_price)
                 sell_price = current_price - (tick_size * 3)
-                print(f"[{symbol}] CLOSE STOP (lot): {change_pct:+.2f}% <= -{stop_loss_pct}% - SELL {lot_qty}주 @ {sell_price:,}원")
+                print(f"[{symbol}] NXT CLOSE STOP (lot): {change_pct:+.2f}% <= -{stop_loss_pct}% - SELL {lot_qty}주 @ {sell_price:,}원")
 
                 result = self.order_service.execute_sell(
                     symbol=symbol,
@@ -1108,7 +1115,7 @@ class MonitorService:
 
             if current_price > lot_entry_price:
                 # Profitable (>0%) - pyramid
-                print(f"[{symbol}] Close {current_price:,}원 > Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
+                print(f"[{symbol}] NXT Close {current_price:,}원 > Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
 
                 # Find watchlist item for stop_loss_pct
                 watchlist_item = next(
@@ -1133,7 +1140,7 @@ class MonitorService:
                 # Loss (0% 이하) - sell today's lot
                 tick_size = self.client.get_tick_size(current_price)
                 sell_price = current_price - (tick_size * 3)
-                print(f"[{symbol}] Close {current_price:,}원 <= Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - SELL {lot_qty}주 @ {sell_price:,}원")
+                print(f"[{symbol}] NXT Close {current_price:,}원 <= Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - SELL {lot_qty}주 @ {sell_price:,}원")
 
                 result = self.order_service.execute_sell(
                     symbol=symbol,
@@ -1146,6 +1153,132 @@ class MonitorService:
                     actions[symbol] = "sold"
                 else:
                     actions[symbol] = "sell_failed"
+
+        return actions
+
+    def execute_after_hours_close_logic(self) -> Dict[str, str]:
+        """
+        Execute 시간외단일가 close logic for non-NXT stocks (17:50-18:00).
+
+        Uses order_type="62" (시간외단일가) with 하한가 (종가 -10%).
+
+        Logic:
+        1. ALL non-NXT positions: If -7% from LIFO lot entry → sell at 하한가
+        2. TODAY's entries only:
+           - If close > lot entry: Add 0.5 unit (pyramid) via 시간외단일가
+           - If close <= lot entry: Sell at 하한가 via 시간외단일가
+
+        Returns dict of {symbol: action_taken}
+        """
+        actions = {}
+        stop_loss_pct = self.trading_settings.STOP_LOSS_PCT  # Default 7%
+
+        for pos in self.order_service.get_open_positions():
+            symbol = pos["symbol"]
+
+            # Only process non-NXT stocks
+            if self.is_nxt_tradable(symbol):
+                continue  # Skip NXT stocks (handled by execute_close_logic)
+
+            # Get KRX closing price for 시간외단일가
+            price_data = self.client.get_stock_price(symbol, market_type="KRX")
+            if not price_data:
+                print(f"[{symbol}] Failed to get KRX price for after-hours")
+                continue
+
+            current_price = price_data.get("last", 0)
+            if current_price <= 0:
+                continue
+
+            # Calculate 하한가 (종가 -10%), 호가단위로 내림
+            tick_size = self.client.get_tick_size(current_price)
+            lower_limit = int((current_price * 0.9) // tick_size) * tick_size
+            print(f"[{symbol}] 시간외단일가 하한가: {current_price:,}원 * 0.9 = {lower_limit:,}원")
+
+            # Get latest lot for LIFO-based logic
+            try:
+                conn = get_connection()
+                latest_lot = get_latest_lot(conn, symbol)
+                conn.close()
+            except Exception as e:
+                print(f"[{symbol}] Failed to get latest lot: {e}")
+                latest_lot = None
+
+            if not latest_lot:
+                continue
+
+            lot_entry_price = int(latest_lot["avg_purchase_price"])
+            lot_qty = latest_lot["net_quantity"]
+
+            if lot_entry_price <= 0:
+                continue
+
+            change_pct = ((current_price / lot_entry_price) - 1) * 100
+
+            # 1. ALL positions: Check -7% stop loss (LIFO lot based)
+            if change_pct <= -stop_loss_pct:
+                print(f"[{symbol}] 시간외단일가 STOP (lot): {change_pct:+.2f}% <= -{stop_loss_pct}% - SELL {lot_qty}주 @ {lower_limit:,}원")
+
+                result = self.order_service.execute_sell(
+                    symbol=symbol,
+                    price=lower_limit,
+                    reason="after_hours_stop_loss",
+                    sell_qty=lot_qty,
+                    order_type="62",  # 시간외단일가
+                )
+
+                if result:
+                    actions[symbol] = "after_hours_stop_loss"
+                else:
+                    actions[symbol] = "after_hours_stop_loss_failed"
+                continue
+
+            # 2. TODAY's entries only: pyramid or cut loss
+            if symbol not in self.daily_triggers:
+                continue
+
+            if current_price > lot_entry_price:
+                # Profitable (>0%) - pyramid via 시간외단일가
+                # 시간외단일가 상한가 = 종가 * 1.1
+                upper_limit = int((current_price * 1.1) // tick_size) * tick_size
+                print(f"[{symbol}] 시간외단일가 Close {current_price:,}원 > Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID @ {upper_limit:,}원")
+
+                watchlist_item = next(
+                    (w for w in self.watchlist if w["ticker"] == symbol),
+                    None
+                )
+                custom_stop_loss_pct = watchlist_item.get("stop_loss_pct") if watchlist_item else None
+
+                result = self.order_service.execute_buy(
+                    symbol=symbol,
+                    target_price=current_price,
+                    is_initial=False,
+                    stop_loss_pct=custom_stop_loss_pct,
+                    order_type="62",  # 시간외단일가
+                    use_after_hours_price=True,
+                )
+
+                if result:
+                    actions[symbol] = "after_hours_pyramid"
+                else:
+                    actions[symbol] = "after_hours_pyramid_failed"
+
+            else:
+                # Loss (0% 이하) - sell at 하한가 via 시간외단일가
+                print(f"[{symbol}] 시간외단일가 Close {current_price:,}원 <= Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - SELL {lot_qty}주 @ {lower_limit:,}원")
+
+                result = self.order_service.execute_sell(
+                    symbol=symbol,
+                    price=lower_limit,
+                    reason="after_hours_below_lot_entry",
+                    sell_qty=lot_qty,
+                    order_type="62",  # 시간외단일가
+                )
+
+                if result:
+                    actions[symbol] = "after_hours_sold"
+                else:
+                    actions[symbol] = "after_hours_sell_failed"
 
         return actions
 
@@ -1205,10 +1338,18 @@ class MonitorService:
         stopped = self.check_and_execute_stop_loss()
         result["stop_losses"] = stopped
 
-        # Execute close logic near NXT close only (19:55-20:00)
-        # KRX close (15:20-15:30) is 동시호가, skip pyramid there
+        # Execute close logic based on time window
+        # 1. 시간외단일가 (17:50-18:00): non-NXT stocks
+        # 2. NXT close (19:55-20:00): NXT-tradable stocks
+        if self.is_after_hours_session():
+            # 17:50-18:00: 시간외단일가 for non-NXT stocks
+            after_hours_actions = self.execute_after_hours_close_logic()
+            result["close_actions"].update(after_hours_actions)
+
         if self.is_near_nxt_close(5):
-            result["close_actions"] = self.execute_close_logic()
+            # 19:55-20:00: NXT close for NXT-tradable stocks
+            nxt_actions = self.execute_close_logic(nxt_only=True)
+            result["close_actions"].update(nxt_actions)
 
         return result
 

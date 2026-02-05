@@ -466,7 +466,14 @@ class OrderService:
 
         return result
 
-    def execute_sell(self, symbol: str, price: int, reason: str = "", sell_qty: int = 0) -> Optional[dict]:
+    def execute_sell(
+        self,
+        symbol: str,
+        price: int,
+        reason: str = "",
+        sell_qty: int = 0,
+        order_type: str = "0",
+    ) -> Optional[dict]:
         """
         Execute sell order for position (full or partial).
         Uses kt10001 for CASH positions, kt10007 for CREDIT positions.
@@ -476,6 +483,7 @@ class OrderService:
             price: Sell price
             reason: Reason for selling (for logging)
             sell_qty: Quantity to sell (0 = sell all)
+            order_type: 매매구분 (0: 보통, 3: 시장가, 62: 시간외단일가)
 
         Returns:
             Order result or None if failed
@@ -500,16 +508,17 @@ class OrderService:
         sell_type = "PARTIAL" if is_partial else "FULL"
 
         # 신용/현금 구분
-        order_type = "CREDIT" if crd_class == "CREDIT" else "CASH"
-        trade_logger.log_order_attempt(symbol, "SELL", quantity, price, order_type, f"{reason} ({sell_type})")
+        crd_type = "CREDIT" if crd_class == "CREDIT" else "CASH"
+        order_type_str = "시간외단일가" if order_type == "62" else "지정가"
+        trade_logger.log_order_attempt(symbol, "SELL", quantity, price, crd_type, f"{reason} ({sell_type}, {order_type_str})")
 
         try:
             if crd_class == "CREDIT":
-                print(f"[{symbol}] 신용매도 주문 ({sell_type}, {quantity}주)")
-                result = self.client.sell_credit_order(symbol, quantity, price)
+                print(f"[{symbol}] 신용매도 주문 ({sell_type}, {quantity}주, {order_type_str})")
+                result = self.client.sell_credit_order(symbol, quantity, price, order_type=order_type)
             else:
-                print(f"[{symbol}] 현금매도 주문 ({sell_type}, {quantity}주)")
-                result = self.client.sell_order(symbol, quantity, price)
+                print(f"[{symbol}] 현금매도 주문 ({sell_type}, {quantity}주, {order_type_str})")
+                result = self.client.sell_order(symbol, quantity, price, order_type=order_type)
 
             # Calculate P&L
             entry_price = pos.get("entry_price", price)
