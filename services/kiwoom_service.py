@@ -14,6 +14,9 @@ from config.settings import Settings
 class KiwoomAPIClient:
     """Client for Kiwoom eFriend Plus API."""
 
+    # 토큰 유효기간: 24시간, 12시간마다 갱신
+    TOKEN_REFRESH_HOURS = 12
+
     def __init__(self):
         self.settings = Settings()
         self.base_url = self.settings.BASE_URL
@@ -21,16 +24,29 @@ class KiwoomAPIClient:
         self.secret_key = self.settings.SECRET_KEY
         self.acnt_api_id = self.settings.ACNT_API_ID
         self.access_token = None
+        self.token_issued_at = None  # 토큰 발급 시간
+
+    def _is_token_expired(self) -> bool:
+        """Check if token needs refresh (12 hours elapsed)."""
+        if not self.token_issued_at:
+            return True
+        elapsed = datetime.now() - self.token_issued_at
+        return elapsed.total_seconds() >= self.TOKEN_REFRESH_HOURS * 3600
 
     def get_access_token(self) -> str:
         """
         Get access token for API authentication.
+        Automatically refreshes if 12 hours have passed.
 
         Returns:
             Access token string
         """
-        if self.access_token:
+        if self.access_token and not self._is_token_expired():
             return self.access_token
+
+        # 토큰 만료 또는 없음 - 새로 발급
+        if self.access_token and self._is_token_expired():
+            print(f"[TOKEN] Token expired (12h), refreshing...")
 
         url = f"{self.base_url}/oauth2/token"
         data = {
@@ -43,7 +59,8 @@ class KiwoomAPIClient:
             response = requests.post(url, json=data)
             response.raise_for_status()
             self.access_token = response.json()["token"]
-            print(f"[TOKEN] New access token acquired")
+            self.token_issued_at = datetime.now()
+            print(f"[TOKEN] New access token acquired (valid for 24h, refresh in 12h)")
             return self.access_token
         except Exception as e:
             print(f"✗ Failed to get access token: {e}")
@@ -57,6 +74,7 @@ class KiwoomAPIClient:
             New access token string
         """
         self.access_token = None
+        self.token_issued_at = None
         return self.get_access_token()
 
     def _api_request(self, method: str, url: str, headers: dict, json: dict = None, timeout: int = 10, retry_on_token_error: bool = True) -> requests.Response:
