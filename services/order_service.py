@@ -336,9 +336,12 @@ class OrderService:
         """
         # Calculate buy price
         if use_after_hours_price:
-            # 시간외단일가: 종가 × 1.1 (상한가)
-            buy_price = int(target_price * 1.1)
-            print(f"[{symbol}] 시간외단일가 상한가 주문: {target_price:,} × 1.1 = {buy_price:,}원")
+            # 시간외단일가: 종가 × 1.1 후 호가단위로 내림 (상한가)
+            raw_upper_limit = target_price * 1.1
+            tick_size = self.client.get_tick_size(int(raw_upper_limit))
+            buy_price = int(raw_upper_limit // tick_size) * tick_size  # 호가단위로 내림
+            actual_pct = ((buy_price / target_price) - 1) * 100
+            print(f"[{symbol}] 시간외단일가 상한가 주문: {target_price:,} → {buy_price:,}원 (+{actual_pct:.2f}%)")
         else:
             # 일반: tick buffer 적용
             buy_price = self.add_tick_buffer(target_price)
