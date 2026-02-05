@@ -165,16 +165,33 @@ def update_item(ticker_or_name: str, target_price: int = None, max_units: int = 
         return
 
     idx = df[df["name"] == name].index[0]
+    old_row = df.loc[idx].copy()
 
+    # Track changes
+    changes = []
     if target_price is not None:
+        old_val = int(old_row["target_price"])
         df.loc[idx, "target_price"] = target_price
+        changes.append(f"target: {old_val:,}원 → {target_price:,}원")
     if max_units is not None:
+        old_val = int(old_row["max_units"])
         df.loc[idx, "max_units"] = max_units
+        changes.append(f"max_units: {old_val} → {max_units}")
     if stop_loss_pct is not None:
+        old_val = old_row.get("stop_loss_pct")
+        old_str = f"{old_val}%" if pd.notna(old_val) else "default"
         df.loc[idx, "stop_loss_pct"] = stop_loss_pct
+        changes.append(f"stop_loss: {old_str} → {stop_loss_pct}%")
+
+    if not changes:
+        print(f"[WARN] No changes specified for {name}")
+        print(f"  Current: target={int(old_row['target_price']):,}원, max_units={int(old_row['max_units'])}")
+        return
 
     save_watchlist(df)
     print(f"[OK] Updated {name}")
+    for change in changes:
+        print(f"  {change}")
 
 
 def list_items():
