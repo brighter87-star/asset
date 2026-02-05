@@ -275,16 +275,15 @@ class MonitorService:
                 # Since sold_today tracks real-time, if it's there, it's today's sell.
                 return True
 
-            # 2. Check DB for historical sells (after added_date)
+            # 2. Check DB for historical sells (on or after added_date)
             conn = get_connection()
             try:
                 with conn.cursor() as cur:
                     # Use >= to catch same-day sells (trade_date == added_date)
-                    # but only for dates before today (since sold_today handles today)
                     cur.execute("""
                         SELECT COUNT(*) FROM account_trade_history
                         WHERE REPLACE(stk_cd, 'A', '') = %s
-                          AND trade_date > %s
+                          AND trade_date >= %s
                           AND (io_tp_nm LIKE '%%매도%%' OR io_tp_nm LIKE '%%상환%%')
                     """, (symbol, added_dt))
                     count = cur.fetchone()[0]
