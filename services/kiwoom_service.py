@@ -1660,6 +1660,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
         }
 
         body = {
+            "dmst_stex_tp": "KRX",  # 국내거래소
             "qry_tp": "0",  # 전체
         }
 
