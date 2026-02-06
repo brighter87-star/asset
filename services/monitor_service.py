@@ -1092,16 +1092,16 @@ class MonitorService:
             self.daily_triggers[symbol]["status"] = "price_failed"
             return False
 
-        # Use current price for gap up, target price for breakout
-        if is_gap_up:
-            entry_price = price_data["last"]
-        else:
-            entry_price = target_price
+        # Always use current price for entry (order_service will add tick buffer)
+        current_price = price_data["last"]
+        entry_price = current_price
+
+        print(f"[{symbol}] Entry at current price: {current_price:,}원 (target was {target_price:,}원)")
 
         # First buy (0.5 unit)
         result = self.order_service.execute_buy(
             symbol=symbol,
-            target_price=entry_price,
+            target_price=entry_price,  # order_service adds +3 ticks
             is_initial=True,
             stop_loss_pct=stop_loss_pct,
         )

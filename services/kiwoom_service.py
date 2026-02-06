@@ -1679,6 +1679,69 @@ class KiwoomTradingClient(KiwoomAPIClient):
             print(f"Failed to get pending orders: {e}")
             raise
 
+    def cancel_order(
+        self,
+        order_no: str,
+        stock_code: str,
+        quantity: int,
+        use_credit: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        주문 취소 (kt10003: 현금취소, kt10009: 신용취소)
+
+        Args:
+            order_no: 원주문번호
+            stock_code: 종목코드 (6자리)
+            quantity: 취소수량
+            use_credit: True=신용주문취소, False=현금주문취소
+
+        Returns:
+            dict: 취소 결과
+        """
+        token = self.get_access_token()
+
+        # 신용취소: /api/dostk/crdordr, 현금취소: /api/dostk/ordr
+        if use_credit:
+            url = f"{self.base_url}/api/dostk/crdordr"
+            api_id = 'kt10009'
+        else:
+            url = f"{self.base_url}/api/dostk/ordr"
+            api_id = 'kt10003'
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'api-id': api_id,
+        }
+
+        body = {
+            "dmst_stex_tp": "KRX",
+            "stk_cd": stock_code,
+            "ord_no": order_no,
+            "cncl_qty": str(quantity),
+        }
+
+        self._wait_for_rate_limit()
+
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("return_code") != 0:
+                raise Exception(f"Cancel error: {result.get('return_msg', 'Unknown error')}")
+
+            print(f"[{stock_code}] Order {order_no} cancelled: {quantity}주")
+            return {
+                "order_no": order_no,
+                "cancelled_qty": quantity,
+                "message": result.get("return_msg", ""),
+            }
+
+        except Exception as e:
+            print(f"[{stock_code}] Cancel order failed: {e}")
+            raise
+
     def get_net_assets(self) -> Dict[str, Any]:
         """
         순자산 및 주식자산 조회 (레버리지 계산용)

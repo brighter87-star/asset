@@ -311,6 +311,39 @@ class OrderService:
                 "error": str(e),
             }
 
+    def cancel_pending_orders_for_symbol(self, symbol: str) -> int:
+        """
+        Cancel all pending buy orders for a symbol.
+
+        Args:
+            symbol: Stock code (6 digits)
+
+        Returns:
+            Number of orders cancelled
+        """
+        cancelled = 0
+        try:
+            pending_orders = self.client.get_pending_orders()
+            for order in pending_orders:
+                order_symbol = order.get("stk_cd", "").replace("A", "")
+                if order_symbol == symbol:
+                    order_no = order.get("ord_no", "")
+                    ncls_qty = int(order.get("ncls_qty", 0))  # 미체결수량
+                    if order_no and ncls_qty > 0:
+                        try:
+                            self.client.cancel_order(
+                                order_no=order_no,
+                                stock_code=symbol,
+                                quantity=ncls_qty,
+                                use_credit=True,  # Most orders are credit
+                            )
+                            cancelled += 1
+                        except Exception as e:
+                            print(f"[{symbol}] Failed to cancel order {order_no}: {e}")
+        except Exception as e:
+            print(f"[{symbol}] Failed to get pending orders: {e}")
+        return cancelled
+
     def execute_buy(
         self,
         symbol: str,
@@ -334,6 +367,11 @@ class OrderService:
         Returns:
             Order result or None if failed
         """
+        # Cancel any pending orders for this symbol before placing new order
+        cancelled = self.cancel_pending_orders_for_symbol(symbol)
+        if cancelled > 0:
+            print(f"[{symbol}] Cancelled {cancelled} pending order(s) before new buy")
+
         # Calculate buy price
         if use_after_hours_price:
             # 시간외단일가: 상한가 (종가 × 1.1)로 주문 - 체결 확보
