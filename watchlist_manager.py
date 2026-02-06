@@ -6,8 +6,8 @@ Usage:
     python watchlist_manager.py add 005930 85000 --date 2/6         # Add with specific date
     python watchlist_manager.py add 삼성전자 85000 --date 2월6일    # Korean date format
     python watchlist_manager.py remove 삼성전자                       # Remove by name
-    python watchlist_manager.py update 삼성전자 --target 90000       # Update target price
-    python watchlist_manager.py update 삼성전자 --date 2/7           # Update date only
+    python watchlist_manager.py update 삼성전자 --target 90000       # Update target price (date auto-updates to today)
+    python watchlist_manager.py update 삼성전자 --date 2/7           # Update date only (no auto-update)
     python watchlist_manager.py list                                 # List all items
 """
 
@@ -363,6 +363,10 @@ def main():
             except ValueError as e:
                 print(f"[ERROR] {e}")
                 return
+        else:
+            # Auto-update added_date to today when other fields change
+            if args.target_price is not None or args.max_units is not None or args.stop_loss is not None:
+                added_date = date.today()
         update_item(args.name, args.target_price, args.max_units, args.stop_loss, added_date)
     elif args.command == "list":
         list_items()
