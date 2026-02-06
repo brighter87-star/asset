@@ -691,14 +691,14 @@ class MonitorService:
         return time(19, 30) <= current_time < time(20, 0)
 
     def is_krx_afternoon_close_session(self) -> bool:
-        """Check if we're in KRX afternoon close session (15:18 ~ 15:19) for pyramiding."""
+        """Check if we're in KRX afternoon close session (15:18 ~ 15:20) for pyramiding/cut loss."""
         now_kst = self.get_current_time_kst()
 
         if now_kst.weekday() >= 5:
             return False
 
         current_time = now_kst.time()
-        return time(15, 18) <= current_time < time(15, 19)
+        return time(15, 18) <= current_time < time(15, 20)
 
     def is_krx_close_time(self) -> bool:
         """Check if we're in KRX close time (15:18 ~ 15:20) - for close logic of non-NXT stocks."""
