@@ -977,14 +977,27 @@ class MonitorService:
         if not self.can_buy_more_units(item):
             return False
 
+        # Re-sync holdings before checking to get latest data
+        # This prevents duplicate buys when holdings changed outside this bot
+        self.order_service.sync_positions_from_db()
+
         # Session-specific logic
-        has_morning_buy = symbol in self.daily_triggers and self.daily_triggers[symbol].get("session") == "morning"
+        has_today_trigger = symbol in self.daily_triggers
+        trigger_session = self.daily_triggers.get(symbol, {}).get("session", "")
 
         if current_session == "morning":
             # 오전: 돌파 매수 (한 번만)
-            if has_morning_buy:
+            if has_today_trigger and trigger_session == "morning":
                 return False  # Already bought in morning
-            # Safety check: already have today's position (prevents double-buy on bot restart)
+            # Safety check: already have today's position (prevents double-buy)
+            if self.has_today_position(symbol):
+                return False
+
+        elif current_session == "afternoon":
+            # 오후: 돌파 매수 (한 번만, 오전에 안 샀으면)
+            if has_today_trigger:
+                return False  # Already bought today (morning or afternoon)
+            # Safety check: already have today's position
             if self.has_today_position(symbol):
                 return False
 
@@ -993,9 +1006,9 @@ class MonitorService:
             if not self.is_nxt_tradable(symbol):
                 return False  # NXT 불가 종목은 KRX close(15:18)에서 처리
             # If already bought in evening, skip
-            if symbol in self.daily_triggers and self.daily_triggers[symbol].get("session") == "evening":
+            if has_today_trigger and trigger_session == "evening":
                 return False
-            # If first buy (no morning buy), will do full 1 unit in execute_entry
+            # If first buy (no morning/afternoon buy), will do full 1 unit in execute_entry
 
         # Get current price
         price_data = self.get_price(symbol)
@@ -1006,7 +1019,7 @@ class MonitorService:
 
         # Check breakout: 현재가 >= 기준가
         if current_price >= target_price:
-            session_name = {"morning": "오전", "evening": "NXT저녁"}.get(current_session, current_session)
+            session_name = {"morning": "오전", "afternoon": "오후", "evening": "NXT저녁"}.get(current_session, current_session)
             print(f"[{symbol}] BREAKOUT ({session_name}): {current_price:,}원 >= {target_price:,}원")
             return True
 
