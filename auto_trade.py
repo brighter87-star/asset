@@ -398,10 +398,10 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     breakout_active = monitor.is_breakout_entry_allowed()
     active_marker = " [ACTIVE]" if breakout_active else ""
 
-    # Check close logic timing (KRX 15:18 or NXT 19:58)
+    # Check close logic timing (KRX 15:18-19 or NXT 19:58)
     near_nxt_close = monitor.is_near_nxt_close(2)
-    near_krx_close = monitor.is_krx_close_time() if hasattr(monitor, 'is_krx_close_time') else False
-    if near_krx_close:
+    krx_afternoon_close = monitor.is_krx_afternoon_close_session() if hasattr(monitor, 'is_krx_afternoon_close_session') else False
+    if krx_afternoon_close:
         close_marker = " [KRX CLOSE]"
     elif near_nxt_close:
         close_marker = " [NXT CLOSE]"
@@ -412,7 +412,7 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     price_market = monitor.get_current_market_display()
 
     print(f"[{now.strftime('%H:%M:%S.%f')[:12]}] Live Monitoring [{price_market}]{close_marker}")
-    print(f"Breakout: 8:00-8:02, 9:00-9:10, 19:30-20:00 | Close: 15:18(KRX), 19:58(NXT){active_marker}")
+    print(f"Breakout: 8:00-8:02, 9:00-9:10, 14:30-15:18 | Close: 15:18-19(KRX), 19:58(NXT){active_marker}")
     print("=" * 74)
 
     # Separate held and non-held items
