@@ -977,9 +977,12 @@ class MonitorService:
         if not self.can_buy_more_units(item):
             return False
 
-        # Re-sync holdings before checking to get latest data
+        # Re-sync holdings before checking (throttled to once per 30 seconds)
         # This prevents duplicate buys when holdings changed outside this bot
-        self.order_service.sync_positions_from_db()
+        now = datetime.now()
+        if not hasattr(self, '_last_sync_time') or (now - self._last_sync_time).total_seconds() > 30:
+            self.order_service.sync_positions_from_db()
+            self._last_sync_time = now
 
         # Session-specific logic
         has_today_trigger = symbol in self.daily_triggers
