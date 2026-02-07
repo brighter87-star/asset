@@ -1936,6 +1936,62 @@ class KiwoomTradingClient(KiwoomAPIClient):
                 "market": "AFTER_HOURS",
             }
 
+    def get_stock_daily_prices(self, stock_code: str, days: int = 10) -> list:
+        """
+        개별 종목 일별 시세 조회 (ka10086)
+
+        Args:
+            stock_code: 종목코드 (6자리)
+            days: 조회할 거래일 수
+
+        Returns:
+            list of dict: [{"date": "20260207", "volume": 12345678, ...}, ...]
+            최신일 순서로 정렬됨
+        """
+        token = self.get_access_token()
+        url = f"{self.base_url}/api/dostk/mrkcond"
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json; charset=UTF-8',
+            'api-id': 'ka10086',
+        }
+
+        body = {
+            "stk_cd": stock_code,
+            "qry_dt": date.today().strftime("%Y%m%d"),
+            "indc_tp": "0",  # 수량 표시
+        }
+
+        try:
+            self._wait_for_rate_limit()
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("return_code") != 0:
+                print(f"[{stock_code}] ka10086 error: {result.get('return_msg')}")
+                return []
+
+            daily_data = result.get("daly_stkpc", [])
+            parsed = []
+            for item in daily_data[:days]:
+                vol_str = str(item.get("trde_qty", "0")).replace("+", "").replace("-", "")
+                try:
+                    volume = int(vol_str)
+                except ValueError:
+                    volume = 0
+                parsed.append({
+                    "date": item.get("date", ""),
+                    "volume": volume,
+                })
+
+            return parsed
+
+        except Exception as e:
+            print(f"[{stock_code}] Failed to get daily prices: {e}")
+            return []
+
     def get_stock_price(self, stock_code: str, market_type: str = "KRX", _retry: bool = True) -> Dict[str, Any]:
         """
         개별 종목 현재가 조회 (REST API)

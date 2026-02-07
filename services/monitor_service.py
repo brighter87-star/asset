@@ -39,6 +39,8 @@ class TradingSettings:
         self.UNIT: int = 1              # Total units (1, 2, 3...)
         self.TICK_BUFFER: int = 3       # Target price + N ticks
         self.STOP_LOSS_PCT: float = 7.0 # Stop loss %
+        self.VOLUME_MA_DAYS: int = 10   # Volume moving average period
+        self.VOLUME_MULTIPLIER: float = 1.5  # Volume threshold multiplier
 
     def update(self, key: str, value):
         """Update setting value."""
@@ -366,12 +368,16 @@ class MonitorService:
             print(f"[SETTINGS] UNIT={self.trading_settings.UNIT} "
                   f"({self.trading_settings.get_unit_percent()}%), "
                   f"TICK={self.trading_settings.TICK_BUFFER}, "
-                  f"SL={self.trading_settings.STOP_LOSS_PCT}%")
+                  f"SL={self.trading_settings.STOP_LOSS_PCT}%, "
+                  f"VOL_MA={self.trading_settings.VOLUME_MA_DAYS}d, "
+                  f"VOL_MULT={self.trading_settings.VOLUME_MULTIPLIER}x")
 
             trade_logger.log_settings_change({
                 "UNIT": self.trading_settings.UNIT,
                 "TICK_BUFFER": self.trading_settings.TICK_BUFFER,
                 "STOP_LOSS_PCT": self.trading_settings.STOP_LOSS_PCT,
+                "VOLUME_MA_DAYS": self.trading_settings.VOLUME_MA_DAYS,
+                "VOLUME_MULTIPLIER": self.trading_settings.VOLUME_MULTIPLIER,
             })
             return True
 
@@ -944,6 +950,34 @@ class MonitorService:
             return True
         return False
 
+    def passes_entry_gates(self, item: dict) -> bool:
+        """
+        Common gate conditions for all entry types (breakout, gap-up, etc.).
+        New universal entry filters should be added here.
+        """
+        symbol = item["ticker"]
+
+        # Skip if sold today (manual or stop loss)
+        if self.is_sold_today(symbol):
+            return False
+
+        # Skip if sold after added to watchlist (permanent skip until re-added)
+        if self.is_sold_after_added(item):
+            return False
+
+        # Check if we can buy more units (current_units < max_units)
+        if not self.can_buy_more_units(item):
+            return False
+
+        # Re-sync holdings before checking (throttled to once per 30 seconds)
+        # This prevents duplicate buys when holdings changed outside this bot
+        now = datetime.now()
+        if not hasattr(self, '_last_sync_time') or (now - self._last_sync_time).total_seconds() > 30:
+            self.order_service.sync_positions_from_db()
+            self._last_sync_time = now
+
+        return True
+
     def check_breakout_entry(self, item: dict) -> bool:
         """
         Check if breakout entry condition is met.
@@ -960,29 +994,13 @@ class MonitorService:
         if not self.is_breakout_entry_allowed():
             return False
 
-        # Skip if sold today (manual or stop loss)
-        if self.is_sold_today(symbol):
-            return False
-
-        # Skip if sold after added to watchlist (permanent skip until re-added)
-        if self.is_sold_after_added(item):
+        if not self.passes_entry_gates(item):
             return False
 
         # Check current session
         current_session = self.get_current_session()
         if not current_session:
             return False
-
-        # Check if we can buy more units (current_units < max_units)
-        if not self.can_buy_more_units(item):
-            return False
-
-        # Re-sync holdings before checking (throttled to once per 30 seconds)
-        # This prevents duplicate buys when holdings changed outside this bot
-        now = datetime.now()
-        if not hasattr(self, '_last_sync_time') or (now - self._last_sync_time).total_seconds() > 30:
-            self.order_service.sync_positions_from_db()
-            self._last_sync_time = now
 
         # Session-specific logic
         has_today_trigger = symbol in self.daily_triggers
@@ -1034,20 +1052,14 @@ class MonitorService:
 
         Returns True if:
         - It's market open time
-        - Open price > target price
+        - Passes common entry gates
+        - Open price > target price + tick buffer
         - Not already triggered in morning session
-        - current_units < max_units (can still buy more)
-        - Not sold today
         """
         symbol = item["ticker"]
         target_price = item["target_price"]
 
-        # Skip if sold today (manual or stop loss)
-        if self.is_sold_today(symbol):
-            return False
-
-        # Skip if sold after added to watchlist (permanent skip until re-added)
-        if self.is_sold_after_added(item):
+        if not self.passes_entry_gates(item):
             return False
 
         # Gap-up is morning session only
@@ -1058,10 +1070,6 @@ class MonitorService:
 
         # Safety check: already have today's position (prevents double-buy on bot restart)
         if self.has_today_position(symbol):
-            return False
-
-        # Check if we can buy more units (current_units < max_units)
-        if not self.can_buy_more_units(item):
             return False
 
         price_data = self.get_price(symbol)
@@ -1211,6 +1219,38 @@ class MonitorService:
 
         return stopped
 
+    def check_volume_condition(self, symbol: str, today_volume: int) -> bool | None:
+        """
+        Check if today's volume meets the threshold vs N-day average.
+        Fetches historical volume via ka10086 API.
+
+        Returns:
+            True  - volume condition met (today >= avg * multiplier)
+            False - volume condition NOT met
+            None  - API error or no data
+        """
+        days = self.trading_settings.VOLUME_MA_DAYS
+        multiplier = self.trading_settings.VOLUME_MULTIPLIER
+
+        # ka10086 returns today + past days; we need past N days only
+        daily_data = self.client.get_stock_daily_prices(symbol, days=days + 1)
+        if not daily_data:
+            return None
+
+        # Skip today (first entry), take past N days
+        past_data = [d for d in daily_data if d["volume"] > 0][1:days + 1]
+        if len(past_data) < days:
+            return None
+
+        avg_volume = sum(d["volume"] for d in past_data) / len(past_data)
+        if avg_volume <= 0:
+            return None
+
+        ratio = today_volume / avg_volume
+        meets = today_volume >= avg_volume * multiplier
+        print(f"[{symbol}] Volume: {today_volume:,} / Avg({days}d): {avg_volume:,.0f} = {ratio:.2f}x {'>=': if meets else '<'} {multiplier}x")
+        return meets
+
     def execute_close_logic(self, nxt_only: bool = True) -> Dict[str, str]:
         """
         Execute end-of-day close logic for positions.
@@ -1294,30 +1334,53 @@ class MonitorService:
                 continue
 
             if current_price > lot_entry_price:
-                # Profitable (>0%) - pyramid
-                print(f"[{symbol}] NXT Close {current_price:,}원 > Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
+                # Profitable (>0%) - check volume condition for pyramid
+                today_volume = price_data.get("volume", 0)
 
-                # Find watchlist item for stop_loss_pct
-                watchlist_item = next(
-                    (w for w in self.watchlist if w["ticker"] == symbol),
-                    None
-                )
-                custom_stop_loss_pct = watchlist_item.get("stop_loss_pct") if watchlist_item else None
+                vol_ok = self.check_volume_condition(symbol, today_volume)
 
-                result = self.order_service.execute_buy(
-                    symbol=symbol,
-                    target_price=current_price,
-                    is_initial=False,
-                    stop_loss_pct=custom_stop_loss_pct,
-                )
+                if vol_ok is None or vol_ok:
+                    # Volume condition met (or insufficient data) → pyramid
+                    print(f"[{symbol}] NXT Close {current_price:,}원 > Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
 
-                if result:
-                    actions[symbol] = "pyramid"
+                    watchlist_item = next(
+                        (w for w in self.watchlist if w["ticker"] == symbol),
+                        None
+                    )
+                    custom_stop_loss_pct = watchlist_item.get("stop_loss_pct") if watchlist_item else None
+
+                    result = self.order_service.execute_buy(
+                        symbol=symbol,
+                        target_price=current_price,
+                        is_initial=False,
+                        stop_loss_pct=custom_stop_loss_pct,
+                    )
+
+                    if result:
+                        actions[symbol] = "pyramid"
+                    else:
+                        actions[symbol] = "pyramid_failed"
                 else:
-                    actions[symbol] = "pyramid_failed"
+                    # Volume insufficient → take profit
+                    tick_size = self.client.get_tick_size(current_price)
+                    sell_price = current_price - (tick_size * 3)
+                    print(f"[{symbol}] NXT Close {current_price:,}원 > Lot Entry ({change_pct:+.2f}%) but LOW VOLUME - TAKE PROFIT {lot_qty}주 @ {sell_price:,}원")
+
+                    result = self.order_service.execute_sell(
+                        symbol=symbol,
+                        price=sell_price,
+                        reason="close_take_profit_low_volume",
+                        sell_qty=lot_qty,
+                    )
+
+                    if result:
+                        actions[symbol] = "take_profit"
+                    else:
+                        actions[symbol] = "take_profit_failed"
 
             else:
                 # Loss (0% 이하) - sell today's lot
+
                 tick_size = self.client.get_tick_size(current_price)
                 sell_price = current_price - (tick_size * 3)
                 print(f"[{symbol}] NXT Close {current_price:,}원 <= Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - SELL {lot_qty}주 @ {sell_price:,}원")
@@ -1416,29 +1479,51 @@ class MonitorService:
                 continue
 
             if current_price > lot_entry_price:
-                # Profitable (>0%) - pyramid
-                print(f"[{symbol}] KRX Close {current_price:,}원 > Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
+                # Profitable (>0%) - check volume condition for pyramid
+                today_volume = price_data.get("volume", 0)
 
-                watchlist_item = next(
-                    (w for w in self.watchlist if w["ticker"] == symbol),
-                    None
-                )
-                custom_stop_loss_pct = watchlist_item.get("stop_loss_pct") if watchlist_item else None
+                vol_ok = self.check_volume_condition(symbol, today_volume)
 
-                result = self.order_service.execute_buy(
-                    symbol=symbol,
-                    target_price=current_price,
-                    is_initial=False,
-                    stop_loss_pct=custom_stop_loss_pct,
-                )
+                if vol_ok is None or vol_ok:
+                    # Volume condition met (or insufficient data) → pyramid
+                    print(f"[{symbol}] KRX Close {current_price:,}원 > Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
 
-                if result:
-                    actions[symbol] = "krx_pyramid"
+                    watchlist_item = next(
+                        (w for w in self.watchlist if w["ticker"] == symbol),
+                        None
+                    )
+                    custom_stop_loss_pct = watchlist_item.get("stop_loss_pct") if watchlist_item else None
+
+                    result = self.order_service.execute_buy(
+                        symbol=symbol,
+                        target_price=current_price,
+                        is_initial=False,
+                        stop_loss_pct=custom_stop_loss_pct,
+                    )
+
+                    if result:
+                        actions[symbol] = "krx_pyramid"
+                    else:
+                        actions[symbol] = "krx_pyramid_failed"
                 else:
-                    actions[symbol] = "krx_pyramid_failed"
+                    # Volume insufficient → take profit
+                    print(f"[{symbol}] KRX Close {current_price:,}원 > Lot Entry ({change_pct:+.2f}%) but LOW VOLUME - TAKE PROFIT {lot_qty}주 @ {sell_price:,}원")
+
+                    result = self.order_service.execute_sell(
+                        symbol=symbol,
+                        price=sell_price,
+                        reason="krx_take_profit_low_volume",
+                        sell_qty=lot_qty,
+                    )
+
+                    if result:
+                        actions[symbol] = "krx_take_profit"
+                    else:
+                        actions[symbol] = "krx_take_profit_failed"
 
             else:
                 # Loss (0% 이하) - sell lot
+
                 print(f"[{symbol}] KRX Close {current_price:,}원 <= Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - SELL {lot_qty}주 @ {sell_price:,}원")
 
                 result = self.order_service.execute_sell(
