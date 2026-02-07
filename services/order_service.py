@@ -18,12 +18,14 @@ POSITIONS_FILE = Path(__file__).resolve().parent.parent / ".positions.json"
 
 
 class DefaultSettings:
-    """Default trading settings."""
+    """Fallback settings (used only if TradingSettings not provided)."""
     UNIT: int = 1
     TICK_BUFFER: int = 3
     STOP_LOSS_PCT: float = 7.0
-    UNIT_BASE_PERCENT: float = 5.0  # 1 unit = 5%
-    MAX_LEVERAGE_PCT: float = 120.0  # 최대 레버리지 (순자산 대비 주식자산 %)
+    UNIT_BASE_PERCENT: float = 5.0
+    MAX_LEVERAGE_PCT: float = 120.0
+    VOLUME_MA_DAYS: int = 10
+    VOLUME_MULTIPLIER: float = 1.5
 
     def get_unit_percent(self) -> float:
         return self.UNIT * self.UNIT_BASE_PERCENT
@@ -60,7 +62,7 @@ class OrderService:
         except Exception as e:
             print(f"[ERROR] Failed to save positions: {e}")
 
-    def sync_positions_from_db(self, stop_loss_pct: float = 7.0):
+    def sync_positions_from_db(self, stop_loss_pct: float = None):
         """
         holdings 테이블에서 보유종목을 로드하여 positions에 동기화.
         오늘 매수분(loan_dt가 오늘인 신용, 또는 오늘 매수한 현금)을 별도 추적.
@@ -72,6 +74,9 @@ class OrderService:
             synced count
         """
         from datetime import date
+
+        if stop_loss_pct is None:
+            stop_loss_pct = self.settings.STOP_LOSS_PCT
 
         try:
             conn = get_connection()
@@ -179,8 +184,11 @@ class OrderService:
             print(f"[ERROR] Failed to sync from DB: {e}")
             return self._sync_holdings_from_api_fallback(stop_loss_pct)
 
-    def _sync_holdings_from_api_fallback(self, stop_loss_pct: float = 7.0):
+    def _sync_holdings_from_api_fallback(self, stop_loss_pct: float = None):
         """API에서 보유종목 동기화 (DB 실패 시 fallback)."""
+        if stop_loss_pct is None:
+            stop_loss_pct = self.settings.STOP_LOSS_PCT
+
         try:
             holdings = self.client.get_holdings()
             holdings_list = holdings.get("stk_acnt_evlt_prst", [])
@@ -290,7 +298,7 @@ class OrderService:
             projected_stock_assets = stock_assets + buy_amount
             projected_leverage = (projected_stock_assets / net_assets * 100) if net_assets > 0 else 999
 
-            max_leverage = getattr(self.settings, 'MAX_LEVERAGE_PCT', 120.0)
+            max_leverage = self.settings.MAX_LEVERAGE_PCT
             allowed = projected_leverage <= max_leverage
 
             return {

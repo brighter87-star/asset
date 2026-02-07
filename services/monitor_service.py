@@ -39,6 +39,7 @@ class TradingSettings:
         self.UNIT: int = 1              # Total units (1, 2, 3...)
         self.TICK_BUFFER: int = 3       # Target price + N ticks
         self.STOP_LOSS_PCT: float = 7.0 # Stop loss %
+        self.MAX_LEVERAGE_PCT: float = 120.0  # Max leverage (stock / net assets %)
         self.VOLUME_MA_DAYS: int = 10   # Volume moving average period
         self.VOLUME_MULTIPLIER: float = 1.5  # Volume threshold multiplier
 
@@ -369,6 +370,7 @@ class MonitorService:
                   f"({self.trading_settings.get_unit_percent()}%), "
                   f"TICK={self.trading_settings.TICK_BUFFER}, "
                   f"SL={self.trading_settings.STOP_LOSS_PCT}%, "
+                  f"LEV={self.trading_settings.MAX_LEVERAGE_PCT}%, "
                   f"VOL_MA={self.trading_settings.VOLUME_MA_DAYS}d, "
                   f"VOL_MULT={self.trading_settings.VOLUME_MULTIPLIER}x")
 
@@ -376,6 +378,7 @@ class MonitorService:
                 "UNIT": self.trading_settings.UNIT,
                 "TICK_BUFFER": self.trading_settings.TICK_BUFFER,
                 "STOP_LOSS_PCT": self.trading_settings.STOP_LOSS_PCT,
+                "MAX_LEVERAGE_PCT": self.trading_settings.MAX_LEVERAGE_PCT,
                 "VOLUME_MA_DAYS": self.trading_settings.VOLUME_MA_DAYS,
                 "VOLUME_MULTIPLIER": self.trading_settings.VOLUME_MULTIPLIER,
             })
