@@ -972,6 +972,15 @@ class MonitorService:
         if not self.can_buy_more_units(item):
             return False
 
+        # TODO: Industry Action 필터 (테마 분류기 완성 후 추가)
+        # - watchlist 종목에 theme 컬럼 추가 (예: "2차전지", "반도체")
+        # - 같은 테마 종목들(~5개)의 당일 평균 상승률 계산
+        # - 시장(KOSPI/KOSDAQ) 당일 상승률과 비교
+        # - 테마 평균 > 시장 평균이면 industry action 있음 → 매수 허용
+        # - 테마 평균 <= 시장 평균이면 → 매수 차단
+        # if not self.check_industry_action(item):
+        #     return False
+
         # Re-sync holdings before checking (throttled to once per 30 seconds)
         # This prevents duplicate buys when holdings changed outside this bot
         now = datetime.now()
