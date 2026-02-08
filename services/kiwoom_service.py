@@ -1483,13 +1483,20 @@ class KiwoomTradingClient(KiwoomAPIClient):
         else:
             url = f"{self.base_url}/api/dostk/ordr"
 
-        # 둘 다 같은 Body 형식 사용
+        # 시장 자동 감지: 시간외단일가는 항상 KRX, 그 외 NXT전용시간대면 NXT
+        if order_type == "62":
+            market = "KRX"  # 시간외단일가는 항상 KRX
+        elif self._is_nxt_only_hours():
+            market = "NXT"
+        else:
+            market = "KRX"
+
         body = {
-            "dmst_stex_tp": "KRX",  # 국내거래소 (KRX/NXT/SOR)
+            "dmst_stex_tp": market,
             "stk_cd": stock_code,
             "ord_qty": str(quantity),
             "ord_uv": str(price),
-            "trde_tp": order_type,  # 0:보통, 3:시장가, 5:조건부지정가 등
+            "trde_tp": order_type,
         }
 
         # API ID: kt10000=현금매수, kt10006=신용매수
@@ -1568,12 +1575,20 @@ class KiwoomTradingClient(KiwoomAPIClient):
             'api-id': 'kt10001',
         }
 
+        # 시장 자동 감지
+        if order_type == "62":
+            market = "KRX"
+        elif self._is_nxt_only_hours():
+            market = "NXT"
+        else:
+            market = "KRX"
+
         body = {
-            "dmst_stex_tp": "KRX",  # 국내거래소 (KRX/NXT/SOR)
+            "dmst_stex_tp": market,
             "stk_cd": stock_code,
             "ord_qty": str(quantity),
             "ord_uv": str(price),
-            "trde_tp": order_type,  # 0:보통, 3:시장가, 62:시간외단일가
+            "trde_tp": order_type,
         }
 
         self._wait_for_rate_limit()
@@ -1590,10 +1605,11 @@ class KiwoomTradingClient(KiwoomAPIClient):
                 "order_no": result.get("ord_no", ""),
                 "order_time": result.get("ord_tm", ""),
                 "message": result.get("return_msg", ""),
+                "exchange": market,
             }
 
         except Exception as e:
-            print(f"[{stock_code}] Sell order failed: {e}")
+            print(f"[{stock_code}] Sell order failed ({market}): {e}")
             raise
 
     def sell_credit_order(
@@ -1627,13 +1643,21 @@ class KiwoomTradingClient(KiwoomAPIClient):
             'api-id': 'kt10007',
         }
 
+        # 시장 자동 감지
+        if order_type == "62":
+            market = "KRX"
+        elif self._is_nxt_only_hours():
+            market = "NXT"
+        else:
+            market = "KRX"
+
         body = {
-            "dmst_stex_tp": "KRX",  # 국내거래소 (KRX/NXT/SOR)
+            "dmst_stex_tp": market,
             "stk_cd": stock_code,
             "ord_qty": str(quantity),
             "ord_uv": str(price),
-            "trde_tp": order_type,  # 0:보통, 3:시장가, 62:시간외단일가
-            "loan_dt": loan_dt,  # 대출일자 (빈값이면 자동)
+            "trde_tp": order_type,
+            "loan_dt": loan_dt,
         }
 
         self._wait_for_rate_limit()
@@ -1650,10 +1674,11 @@ class KiwoomTradingClient(KiwoomAPIClient):
                 "order_no": result.get("ord_no", ""),
                 "order_time": result.get("ord_tm", ""),
                 "message": result.get("return_msg", ""),
+                "exchange": market,
             }
 
         except Exception as e:
-            print(f"[{stock_code}] Credit sell order failed: {e}")
+            print(f"[{stock_code}] Credit sell order failed ({market}): {e}")
             raise
 
     def get_pending_orders(self) -> List[Dict[str, Any]]:
