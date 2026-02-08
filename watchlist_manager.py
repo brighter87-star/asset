@@ -9,6 +9,10 @@ Usage:
     python watchlist_manager.py update 삼성전자 --target 90000       # Update target price (date auto-updates to today)
     python watchlist_manager.py update 삼성전자 --date 2/7           # Update date only (no auto-update)
     python watchlist_manager.py list                                 # List all items
+    python watchlist_manager.py list --filter recent --days 7        # Recently added (7 days)
+    python watchlist_manager.py list -f near                         # Near target price (within 5%)
+    python watchlist_manager.py list -f units                        # Items with max_units >= 2
+    python watchlist_manager.py list -f expired                      # Bought then sold/stopped out
 """
 
 import argparse
@@ -279,23 +283,141 @@ def get_item(ticker_or_name: str):
     print(f"  - Added: {row.get('added_date', 'N/A')}")
 
 
-def list_items():
-    """List all items in watchlist."""
+def _check_expired(name: str, added_date_str: str) -> bool:
+    """
+    Check if a watchlist item is expired (bought then sold/stopped out).
+    Queries account_trade_history for sell records after added_date.
+    """
+    try:
+        from db.connection import get_connection
+
+        ticker = get_stock_code(name)
+        if not ticker:
+            return False
+
+        if not added_date_str or pd.isna(added_date_str):
+            return False
+
+        # Parse added_date
+        added_dt = None
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
+            try:
+                added_dt = datetime.strptime(str(added_date_str), fmt).date()
+                break
+            except ValueError:
+                continue
+
+        if not added_dt:
+            return False
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) FROM account_trade_history
+                    WHERE stock_code = %s AND side = '매도'
+                    AND trade_date >= %s
+                """, (ticker, added_dt))
+                count = cur.fetchone()[0]
+            return count > 0
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def list_items(filter_type: str = None, filter_value: int = None):
+    """
+    List watchlist items with optional filter.
+
+    Filters:
+        recent N  - Added within last N days
+        near      - Current price within 5% of target
+        units     - max_units >= 2
+        expired   - Bought then sold (stopped out)
+    """
     df = load_watchlist()
 
     if df.empty:
         print("Watchlist is empty.")
         return
 
-    print(f"\n{'Name':<14} {'Target':>12} {'Max':>5} {'SL%':>6} {'Added':>12}")
-    print("-" * 54)
+    # Apply filters
+    if filter_type == "recent":
+        days = filter_value or 7
+        today = date.today()
+        filtered_rows = []
+        for idx, row in df.iterrows():
+            added = row.get("added_date", "")
+            if pd.isna(added) or added == "":
+                continue
+            try:
+                added_dt = datetime.strptime(str(added), "%Y-%m-%d").date()
+                if (today - added_dt).days <= days:
+                    filtered_rows.append(idx)
+            except ValueError:
+                continue
+        df = df.loc[filtered_rows]
+        print(f"\n[Filter: recent {days} days] {len(df)} items")
 
-    for _, row in df.iterrows():
+    elif filter_type == "near":
+        from services.kiwoom_service import KiwoomTradingClient
+        client = KiwoomTradingClient()
+        filtered_rows = []
+        pct_map = {}
+        price_cache = {}
+        print("\n[Filter: near target] Checking prices...")
+        for idx, row in df.iterrows():
+            name = str(row.get("name", ""))
+            ticker = get_stock_code(name)
+            target = int(row["target_price"])
+            if not ticker:
+                continue
+            try:
+                price_data = client.get_stock_price(ticker)
+                current = int(price_data.get("last", 0))
+                if current > 0:
+                    diff_pct = ((target - current) / current) * 100
+                    if diff_pct <= 5:  # within 5% or exceeded
+                        filtered_rows.append(idx)
+                        pct_map[idx] = diff_pct
+                        price_cache[idx] = current
+            except Exception:
+                continue
+        df = df.loc[filtered_rows]
+        print(f"[Filter: near target (<=5%)] {len(df)} items")
+
+    elif filter_type == "units":
+        df = df[df.get("max_units", 1).apply(lambda x: int(x) if pd.notna(x) else 1) >= 2]
+        print(f"\n[Filter: max_units >= 2] {len(df)} items")
+
+    elif filter_type == "expired":
+        filtered_rows = []
+        print("\n[Filter: expired] Checking sell history...")
+        for idx, row in df.iterrows():
+            name = str(row.get("name", ""))
+            added = row.get("added_date", "")
+            if _check_expired(name, added):
+                filtered_rows.append(idx)
+        df = df.loc[filtered_rows]
+        print(f"[Filter: expired (bought & sold)] {len(df)} items")
+
+    if df.empty:
+        print("No items match the filter.")
+        return
+
+    # Display header
+    if filter_type == "near":
+        print(f"\n{'Name':<14} {'Target':>12} {'Current':>12} {'Diff':>8} {'Added':>12}")
+        print("-" * 62)
+    else:
+        print(f"\n{'Name':<14} {'Target':>12} {'Max':>5} {'SL%':>6} {'Added':>12}")
+        print("-" * 54)
+
+    for idx, row in df.iterrows():
         name = str(row.get("name", ""))
-        # Truncate to max display width of 12
         if get_display_width(name) > 12:
             name = truncate_korean(name, 12)
-        # Pad to width 14 (left-aligned)
         name_display = pad_korean(name, 14, 'left')
 
         target = int(row["target_price"])
@@ -305,9 +427,15 @@ def list_items():
         added = row.get("added_date", "")
         added_str = str(added) if pd.notna(added) and added != "" else "-"
 
-        print(f"{name_display} {target:>12,} {max_units:>5} {sl_str:>6} {added_str:>12}")
+        if filter_type == "near" and idx in pct_map:
+            diff = pct_map[idx]
+            diff_str = f"{diff:+.1f}%" if diff > 0 else "BREAK"
+            current = price_cache.get(idx, 0)
+            print(f"{name_display} {target:>12,} {current:>12,} {diff_str:>8} {added_str:>12}")
+        else:
+            print(f"{name_display} {target:>12,} {max_units:>5} {sl_str:>6} {added_str:>12}")
 
-    print("-" * 54)
+    print("-" * (62 if filter_type == "near" else 54))
     print(f"Total: {len(df)} items")
 
 
@@ -336,7 +464,10 @@ def main():
     update_parser.add_argument("--date", "-d", type=str, help="New added date (e.g., 2/6, 2월6일, 02-06)")
 
     # list command
-    subparsers.add_parser("list", help="List all items in watchlist")
+    list_parser = subparsers.add_parser("list", help="List all items in watchlist")
+    list_parser.add_argument("--filter", "-f", type=str, choices=["recent", "near", "units", "expired"],
+                             help="Filter: recent (N days), near (within 5%%), units (>=2), expired (sold)")
+    list_parser.add_argument("--days", "-n", type=int, default=7, help="Days for 'recent' filter (default: 7)")
 
     # get command
     get_parser = subparsers.add_parser("get", help="Check if item exists in watchlist")
@@ -369,7 +500,9 @@ def main():
                 added_date = date.today()
         update_item(args.name, args.target_price, args.max_units, args.stop_loss, added_date)
     elif args.command == "list":
-        list_items()
+        filter_value = args.days if hasattr(args, 'days') else None
+        list_items(filter_type=args.filter if hasattr(args, 'filter') else None,
+                   filter_value=filter_value)
     elif args.command == "get":
         get_item(args.name)
     else:
