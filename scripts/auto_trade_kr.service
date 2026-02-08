@@ -4,9 +4,9 @@ After=network.target mysql.service
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/Projects/asset
-ExecStart=/root/Projects/asset/venv/bin/python3 auto_trade.py
+User=brighter87
+WorkingDirectory=/home/brighter87/Projects/asset
+ExecStart=/home/brighter87/Projects/asset/venv/bin/python3 auto_trade.py
 Restart=on-failure
 RestartSec=10
 
