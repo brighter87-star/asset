@@ -1,0 +1,22 @@
+[Unit]
+Description=Auto Trade KR - Korean Stock Trading Bot
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/Projects/asset
+ExecStart=/root/Projects/asset/venv/bin/python auto_trade.py
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=auto_trade_kr
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
