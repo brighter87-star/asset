@@ -77,6 +77,20 @@ class KiwoomAPIClient:
         self.token_issued_at = None
         return self.get_access_token()
 
+    def _post(self, url: str, headers: dict, json: dict = None, timeout: int = 10) -> requests.Response:
+        """POST request with automatic token refresh on 8005 error."""
+        response = requests.post(url, headers=headers, json=json, timeout=timeout)
+
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("return_code") == 8005 or "8005" in str(result.get("return_msg", "")):
+                print("[TOKEN] 8005 token invalid, refreshing...")
+                new_token = self.refresh_token()
+                headers['Authorization'] = f'Bearer {new_token}'
+                response = requests.post(url, headers=headers, json=json, timeout=timeout)
+
+        return response
+
     def _api_request(self, method: str, url: str, headers: dict, json: dict = None, timeout: int = 10, retry_on_token_error: bool = True) -> requests.Response:
         """
         Make API request with automatic token refresh on expiry.
@@ -169,7 +183,7 @@ class KiwoomAPIClient:
                     headers["cont-yn"] = "Y"
                     headers["next-key"] = next_key
 
-                response = requests.post(url, headers=headers, json=body, timeout=10)
+                response = self._post(url, headers=headers, json=body, timeout=10)
                 response.raise_for_status()
                 result = response.json()
 
@@ -276,7 +290,7 @@ class KiwoomAPIClient:
                     headers["cont-yn"] = "Y"
                     headers["next-key"] = next_key
 
-                response = requests.post(url, headers=headers, json=body, timeout=10)
+                response = self._post(url, headers=headers, json=body, timeout=10)
                 response.raise_for_status()
                 result_page = response.json()
 
@@ -338,7 +352,7 @@ class KiwoomAPIClient:
                     headers["cont-yn"] = "Y"
                     headers["next-key"] = next_key
 
-                response = requests.post(url, headers=headers, json=body, timeout=10)
+                response = self._post(url, headers=headers, json=body, timeout=10)
                 response.raise_for_status()
                 result_page = response.json()
 
@@ -390,7 +404,7 @@ class KiwoomAPIClient:
         }
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -434,7 +448,7 @@ class KiwoomAPIClient:
         }
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -479,7 +493,7 @@ class KiwoomAPIClient:
         }
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -531,7 +545,7 @@ class KiwoomAPIClient:
                     headers["cont-yn"] = "Y"
                     headers["next-key"] = next_key
 
-                response = requests.post(url, headers=headers, json=body, timeout=30)
+                response = self._post(url, headers=headers, json=body, timeout=30)
                 response.raise_for_status()
                 result_page = response.json()
 
@@ -1419,7 +1433,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
         self._wait_for_rate_limit()
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -1490,7 +1504,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
         self._wait_for_rate_limit()
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -1565,7 +1579,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
         self._wait_for_rate_limit()
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -1625,7 +1639,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
         self._wait_for_rate_limit()
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -1667,7 +1681,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
         self._wait_for_rate_limit()
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -1725,7 +1739,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
         self._wait_for_rate_limit()
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -1768,7 +1782,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
         self._wait_for_rate_limit()
 
         try:
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -1859,7 +1873,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
 
         try:
             self._wait_for_rate_limit()
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -1965,7 +1979,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
 
         try:
             self._wait_for_rate_limit()
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -2039,7 +2053,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
 
         try:
             self._wait_for_rate_limit()
-            response = requests.post(url, headers=headers, json=body, timeout=10)
+            response = self._post(url, headers=headers, json=body, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -2189,7 +2203,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
                     headers["next-key"] = next_key
 
                 self._wait_for_rate_limit()
-                response = requests.post(url, headers=headers, json=body, timeout=30)
+                response = self._post(url, headers=headers, json=body, timeout=30)
                 response.raise_for_status()
                 result = response.json()
 
