@@ -315,8 +315,9 @@ def _check_expired(name: str, added_date_str: str) -> bool:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT COUNT(*) FROM account_trade_history
-                    WHERE stock_code = %s AND side = '매도'
-                    AND trade_date >= %s
+                    WHERE REPLACE(stk_cd, 'A', '') = %s
+                      AND trade_date >= %s
+                      AND (io_tp_nm LIKE '%%매도%%' OR io_tp_nm LIKE '%%상환%%')
                 """, (ticker, added_dt))
                 count = cur.fetchone()[0]
             return count > 0
