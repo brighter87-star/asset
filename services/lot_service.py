@@ -212,6 +212,9 @@ def _insert_daily_lot(
                 net_quantity = VALUES(net_quantity),
                 avg_purchase_price = VALUES(avg_purchase_price),
                 total_cost = VALUES(total_cost),
+                is_closed = FALSE,
+                closed_date = NULL,
+                realized_pnl = NULL,
                 updated_at = CURRENT_TIMESTAMP
             """,
             (

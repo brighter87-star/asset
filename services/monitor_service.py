@@ -75,6 +75,7 @@ class MonitorService:
         self._unit_value_cache: int = 0  # Cached unit value
         self._unit_value_time: float = 0  # Cache timestamp
         self.sold_today: Dict[str, dict] = {}  # Track sold stocks to prevent re-buy
+        self.close_actions_done: set = set()  # Track symbols processed by close logic (reset daily)
         self._load_purchased_stocks()
         self._load_daily_triggers()
         self._load_sold_today()
@@ -644,14 +645,18 @@ class MonitorService:
         return None
 
     def is_krx_afternoon_close_session(self) -> bool:
-        """Check if we're in KRX afternoon close session (15:18 ~ 15:20) for pyramiding/cut loss."""
+        """Check if we're in KRX afternoon close session (15:18 ~ 15:30) for pyramiding/cut loss.
+
+        15:18~15:20: 일반 지정가 주문
+        15:20~15:30: 동시호가 (미처리 종목 재시도)
+        """
         now_kst = self.get_current_time_kst()
 
         if now_kst.weekday() >= 5:
             return False
 
         current_time = now_kst.time()
-        return time(15, 18) <= current_time < time(15, 20)
+        return time(15, 18) <= current_time < time(15, 30)
 
     def is_before_krx_simultaneous_auction(self) -> bool:
         """Check if we're before KRX 동시호가 (before 15:20)."""
@@ -1137,6 +1142,10 @@ class MonitorService:
         for pos in self.order_service.get_open_positions():
             symbol = pos["symbol"]
 
+            # Skip symbols already processed by close logic today
+            if symbol in self.close_actions_done:
+                continue
+
             price_data = self.get_price(symbol)
             if not price_data:
                 continue
@@ -1179,12 +1188,15 @@ class MonitorService:
 
                 if result:
                     actions[symbol] = "close_stop_loss"
+                    self.close_actions_done.add(symbol)
                 else:
                     actions[symbol] = "close_stop_loss_failed"
                 continue  # Skip other logic for this symbol
 
             # 2. TODAY's entries only: pyramid or cut loss (LIFO lot based)
-            if symbol not in self.daily_triggers:
+            # Use today_qty from holdings (tdy_buyq) - covers both bot and manual buys
+            today_qty = pos.get('today_qty', 0)
+            if today_qty <= 0:
                 continue
 
             if current_price > lot_entry_price:
@@ -1212,6 +1224,7 @@ class MonitorService:
 
                     if result:
                         actions[symbol] = "pyramid"
+                        self.close_actions_done.add(symbol)
                     else:
                         actions[symbol] = "pyramid_failed"
                 else:
@@ -1229,6 +1242,7 @@ class MonitorService:
 
                     if result:
                         actions[symbol] = "take_profit"
+                        self.close_actions_done.add(symbol)
                     else:
                         actions[symbol] = "take_profit_failed"
 
@@ -1248,6 +1262,7 @@ class MonitorService:
 
                 if result:
                     actions[symbol] = "sold"
+                    self.close_actions_done.add(symbol)
                 else:
                     actions[symbol] = "sell_failed"
 
@@ -1259,7 +1274,8 @@ class MonitorService:
         self._save_daily_triggers()  # Persist to file
         self.sold_today = {}
         self._save_sold_today()
-        print("[INFO] Daily triggers and sold_today reset")
+        self.close_actions_done = set()
+        print("[INFO] Daily triggers, sold_today, and close_actions reset")
 
     def run_monitoring_cycle(self) -> dict:
         """
