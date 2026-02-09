@@ -578,8 +578,8 @@ class MonitorService:
         return 0 < minutes_until_close <= minutes
 
     def is_any_market_active(self) -> bool:
-        """Check if any trading is possible (8:00~15:30)."""
-        return self.is_market_open() or self.is_breakout_entry_allowed()
+        """Check if any trading/monitoring is possible (8:00~20:00, skip 15:20~15:40)."""
+        return self.is_nxt_session()
 
     def is_market_open_time(self) -> bool:
         """Check if it's exactly market open time (within first minute)."""
@@ -1026,12 +1026,20 @@ class MonitorService:
         Logic:
         - Today's purchase: If -7% from today's entry → sell only today's qty (partial sell)
         - All positions: If -7% from total avg price → sell all
-        - Only runs before KRX 동시호가 (before 15:20)
+        - Runs 8:00~15:20 (KRX/NXT) and 15:40~20:00 (NXT)
+        - Skips 15:20~15:40 (동시호가 + 시장 전환)
 
         Returns list of dicts with {symbol, type, qty} that were stopped out.
         """
-        # KRX 동시호가 시간(15:20-15:30) 및 장 마감 후에는 손절 안함
-        if not self.is_before_krx_simultaneous_auction():
+        now_kst = self.get_current_time_kst()
+        current_time = now_kst.time()
+
+        # 15:20~15:40: 동시호가 + KRX/NXT 전환 구간 → 손절 안함
+        if time(15, 20) <= current_time < time(15, 40):
+            return []
+
+        # 그 외 NXT 세션 (8:00~20:00) 중이어야 함
+        if not self.is_nxt_session():
             return []
 
         stopped = []
