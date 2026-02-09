@@ -923,8 +923,7 @@ class MonitorService:
 
         # Check breakout: 현재가 >= 기준가
         if current_price >= target_price:
-            session_name = {"morning": "오전", "afternoon": "오후", "evening": "NXT저녁"}.get(current_session, current_session)
-            print(f"[{symbol}] BREAKOUT ({session_name}): {current_price:,}원 >= {target_price:,}원")
+            print(f"[{symbol}] BREAKOUT: {current_price:,}원 >= {target_price:,}원")
             return True
 
         return False
