@@ -608,22 +608,10 @@ class MonitorService:
         """
         Check if breakout entry is allowed at current time.
 
-        In Korea, most stocks trade on both KRX and NXT markets:
-        - KRX: 9:00 ~ 15:30 (15:20~15:30 is 동시호가, no execution)
-        - NXT: 8:00 ~ 20:00
-
-        Breakout windows:
-        - 8:00 ~ 8:02 (NXT morning open) - 0.5 unit 돌파 매수
-        - 9:00 ~ 9:10 (KRX morning open) - 0.5 unit 돌파 매수
-        - 14:30 ~ 15:18 (KRX afternoon) - 0.5 unit 돌파 매수
-        - 19:30 ~ 20:00 (NXT evening) - NXT 가능 종목 추가 0.5 unit
-          (저녁에 첫 돌파면 1 unit)
-
-        Morning breakout is ONE time only (NXT or KRX, whichever triggers first).
-        8:03 ~ 9:00 사이는 매수하지 않음.
-        Additional 0.5 unit is added in evening (NXT가능 종목).
-
-        Outside these windows, watchlist is monitored but no buy execution.
+        시장이 열려있으면 언제든 돌파 매수 가능:
+        - 8:00 ~ 15:20: NXT/KRX 정규 시간 (돌파 매수 0.5 unit)
+        - 17:50 ~ 18:00: 시간외단일가 (NXT 불가 종목 추가 0.5 unit)
+        - 19:30 ~ 20:00: NXT 저녁 (NXT 가능 종목 추가 0.5 unit)
         """
         now_kst = self.get_current_time_kst()
 
@@ -632,38 +620,26 @@ class MonitorService:
 
         current_time = now_kst.time()
 
-        # NXT morning open: 8:00 ~ 8:02
-        nxt_morning_start = time(8, 0)
-        nxt_morning_end = time(8, 2)
+        # 정규 시간: 8:00 ~ 15:20 (NXT 8시 개장 ~ KRX 동시호가 직전)
+        in_regular = time(8, 0) <= current_time < time(15, 20)
 
-        # KRX morning open: 9:00 ~ 9:10
-        krx_morning_start = time(9, 0)
-        krx_morning_end = time(9, 10)
+        # 시간외단일가: 17:50 ~ 18:00 (NXT 불가 종목 추가 매수)
+        in_after_hours = time(17, 50) <= current_time < time(18, 0)
 
-        # KRX afternoon: 14:30 ~ 15:18 (돌파 매수)
-        krx_afternoon_start = time(14, 30)
-        krx_afternoon_end = time(15, 18)
+        # NXT 저녁: 19:30 ~ 20:00 (NXT 가능 종목 추가 매수)
+        in_nxt_evening = time(19, 30) <= current_time < time(20, 0)
 
-        # NXT evening close: 19:30 ~ 20:00 (NXT 가능 종목 추가 매수)
-        nxt_evening_start = time(19, 30)
-        nxt_evening_end = time(20, 0)
-
-        in_nxt_morning = nxt_morning_start <= current_time < nxt_morning_end
-        in_krx_morning = krx_morning_start <= current_time < krx_morning_end
-        in_krx_afternoon = krx_afternoon_start <= current_time < krx_afternoon_end
-        in_nxt_evening = nxt_evening_start <= current_time < nxt_evening_end
-
-        return in_nxt_morning or in_krx_morning or in_krx_afternoon or in_nxt_evening
+        return in_regular or in_after_hours or in_nxt_evening
 
     def get_current_session(self) -> Optional[str]:
         """
         Get current trading session name.
 
         Returns:
-            "morning" for 8:00~8:02 or 9:00~9:10 - 돌파 매수 0.5 unit
-            "afternoon" for 14:30~15:18 - 돌파 매수 0.5 unit
+            "morning" for 8:00~15:20 - 돌파 매수 0.5 unit (시간 제한 없음)
+            "after_hours" for 17:50~18:00 - 시간외단일가 (NXT 불가 종목 추가 매수)
             "evening" for 19:30~20:00 (NXT close) - NXT 가능 종목 추가 매수
-            None if not in any session (including 8:03~9:00)
+            None if not in any session
         """
         now_kst = self.get_current_time_kst()
 
@@ -672,18 +648,15 @@ class MonitorService:
 
         current_time = now_kst.time()
 
-        # Morning: 8:00 ~ 8:02 (NXT) or 9:00 ~ 9:10 (KRX)
-        # 8:03 ~ 9:00 사이는 매수하지 않음
-        if time(8, 0) <= current_time < time(8, 2):
-            return "morning"
-        if time(9, 0) <= current_time < time(9, 10):
+        # 정규 시간: 8:00 ~ 15:20
+        if time(8, 0) <= current_time < time(15, 20):
             return "morning"
 
-        # Afternoon: 14:30 ~ 15:18 (KRX afternoon breakout)
-        if time(14, 30) <= current_time < time(15, 18):
-            return "afternoon"
+        # 시간외단일가: 17:50 ~ 18:00
+        if time(17, 50) <= current_time < time(18, 0):
+            return "after_hours"
 
-        # Evening: 19:30 ~ 20:00 (NXT close)
+        # NXT 저녁: 19:30 ~ 20:00
         if time(19, 30) <= current_time < time(20, 0):
             return "evening"
 
