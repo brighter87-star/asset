@@ -645,10 +645,10 @@ class MonitorService:
         return None
 
     def is_krx_afternoon_close_session(self) -> bool:
-        """Check if we're in KRX afternoon close session (15:18 ~ 15:30) for pyramiding/cut loss.
+        """Check if we're in KRX afternoon close session (15:18 ~ 15:28) for pyramiding/cut loss.
 
         15:18~15:20: 일반 지정가 주문
-        15:20~15:30: 동시호가 (미처리 종목 재시도)
+        15:20~15:28: 동시호가 (미처리 종목 재시도, 15:30 마감 전 여유)
         """
         now_kst = self.get_current_time_kst()
 
@@ -656,7 +656,7 @@ class MonitorService:
             return False
 
         current_time = now_kst.time()
-        return time(15, 18) <= current_time < time(15, 30)
+        return time(15, 18) <= current_time < time(15, 28)
 
     def is_before_krx_simultaneous_auction(self) -> bool:
         """Check if we're before KRX 동시호가 (before 15:20)."""
