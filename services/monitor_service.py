@@ -1284,37 +1284,41 @@ class MonitorService:
         if self.check_pre_market_reload():
             result["reloaded"] = True
 
-        # Check if any market is active (KRX or NXT breakout windows)
+        # Check if any market is active (8:00~20:00)
         if not self.is_any_market_active():
             return result
 
-        # Check market open gap-up entries
-        if self.is_market_open_time():
-            for item in self.watchlist:
-                if self.check_gap_up_entry(item):
-                    if self.execute_entry(item, is_gap_up=True):
-                        result["entries"].append({
-                            "symbol": item["ticker"],
-                            "type": "gap_up",
-                        })
-
-        # Check breakout entries
-        for item in self.watchlist:
-            if self.check_breakout_entry(item):
-                if self.execute_entry(item, is_gap_up=False):
-                    result["entries"].append({
-                        "symbol": item["ticker"],
-                        "type": "breakout",
-                    })
-
-        # Check stop losses
+        # 1. 손절 체크 (가장 높은 우선순위 - 다른 로직 에러에 영향받지 않도록)
         stopped = self.check_and_execute_stop_loss()
         result["stop_losses"] = stopped
 
-        # Execute close logic (15:18-15:20): pyramid if >0%, cut loss if <=0%
+        # 2. 종가 로직 (15:18-15:20): pyramid if >0%, cut loss if <=0%
         if self.is_krx_afternoon_close_session():
             close_actions = self.execute_close_logic()
             result["close_actions"].update(close_actions)
+
+        # 3. 매수 체크 (try/except로 감싸서 에러 시에도 위 로직에 영향 없음)
+        try:
+            # Gap-up entries at market open
+            if self.is_market_open_time():
+                for item in self.watchlist:
+                    if self.check_gap_up_entry(item):
+                        if self.execute_entry(item, is_gap_up=True):
+                            result["entries"].append({
+                                "symbol": item["ticker"],
+                                "type": "gap_up",
+                            })
+
+            # Breakout entries
+            for item in self.watchlist:
+                if self.check_breakout_entry(item):
+                    if self.execute_entry(item, is_gap_up=False):
+                        result["entries"].append({
+                            "symbol": item["ticker"],
+                            "type": "breakout",
+                        })
+        except Exception as e:
+            print(f"[ERROR] Entry check failed: {e}")
 
         return result
 
