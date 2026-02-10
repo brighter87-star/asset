@@ -884,14 +884,16 @@ def run_trading_loop():
                         })
 
                 if result["stop_losses"]:
-                    for symbol in result["stop_losses"]:
-                        print(f"[{now.strftime('%H:%M:%S')}] STOP LOSS: {symbol}")
+                    for stop in result["stop_losses"]:
+                        sym = stop["symbol"] if isinstance(stop, dict) else stop
+                        qty = stop.get("qty", 0) if isinstance(stop, dict) else 0
+                        print(f"[{now.strftime('%H:%M:%S')}] STOP LOSS: {sym} ({qty}주)")
                         today_trades.append({
                             "time": now.strftime("%H:%M:%S"),
-                            "symbol": symbol,
-                            "name": get_stock_name(symbol),
+                            "symbol": sym,
+                            "name": get_stock_name(sym),
                             "side": "매도",
-                            "quantity": 0,
+                            "quantity": qty,
                             "price": 0,
                             "status": "손절주문",
                         })
