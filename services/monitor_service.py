@@ -609,9 +609,7 @@ class MonitorService:
         """
         Check if breakout entry is allowed at current time.
 
-        돌파 매수: 8:00 ~ 15:00 (KRX 동시호가/시간외 매수 없음)
-        피라미딩은 execute_close_logic (15:18)에서 별도 처리.
-        15:30 이후 손절 외 거래 없음.
+        돌파 매수: 8:00 ~ 15:20 (동시호가 시작 전까지)
         """
         now_kst = self.get_current_time_kst()
 
@@ -620,8 +618,7 @@ class MonitorService:
 
         current_time = now_kst.time()
 
-        # 돌파 매수: 8:00 ~ 15:00
-        return time(8, 0) <= current_time < time(15, 0)
+        return time(8, 0) <= current_time < time(15, 20)
 
     def get_current_session(self) -> Optional[str]:
         """
