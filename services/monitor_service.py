@@ -1197,7 +1197,8 @@ class MonitorService:
         # Get today's net buys from account_trade_history (accurate entry prices)
         today_net_buys = self._get_today_net_buys()
         if today_net_buys:
-            print(f"[CLOSE] Today's net buys: {', '.join(f'{s}({d['net_qty']}주@{d['avg_buy_price']:,})' for s, d in today_net_buys.items())}")
+            items = [f"{s}({d['net_qty']}주@{d['avg_buy_price']:,})" for s, d in today_net_buys.items()]
+            print(f"[CLOSE] Today's net buys: {', '.join(items)}")
 
         for pos in self.order_service.get_open_positions():
             symbol = pos["symbol"]
