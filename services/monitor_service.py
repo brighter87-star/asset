@@ -645,9 +645,9 @@ class MonitorService:
         return None
 
     def is_krx_afternoon_close_session(self) -> bool:
-        """Check if we're in KRX afternoon close session (15:18 ~ 15:28) for pyramiding/cut loss.
+        """Check if we're in KRX afternoon close session (15:15 ~ 15:28) for pyramiding/cut loss.
 
-        15:18~15:20: 일반 지정가 주문
+        15:15~15:20: trade history 동기화 + 지정가 주문
         15:20~15:28: 동시호가 (미처리 종목 재시도, 15:30 마감 전 여유)
         """
         now_kst = self.get_current_time_kst()
@@ -656,7 +656,7 @@ class MonitorService:
             return False
 
         current_time = now_kst.time()
-        return time(15, 18) <= current_time < time(15, 28)
+        return time(15, 15) <= current_time < time(15, 28)
 
     def is_before_krx_simultaneous_auction(self) -> bool:
         """Check if we're before KRX 동시호가 (before 15:20)."""
@@ -1125,19 +1125,82 @@ class MonitorService:
         print(f"[{symbol}] Volume: {today_volume:,} / Avg({days}d): {avg_volume:,.0f} = {ratio:.2f}x {'>=': if meets else '<'} {multiplier}x")
         return meets
 
+    def _get_today_net_buys(self) -> Dict[str, dict]:
+        """
+        Get today's net buy positions from account_trade_history.
+
+        For each stock, calculates:
+        - net_qty: today_buy_qty - today_sell_qty (only if > 0)
+        - avg_buy_price: weighted average of today's buy prices
+
+        Returns dict of {symbol: {"net_qty": int, "avg_buy_price": int}}
+        """
+        today = date.today()
+        result = {}
+
+        try:
+            conn = get_connection()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT stk_cd, io_tp_nm, cntr_qty, cntr_uv
+                    FROM account_trade_history
+                    WHERE trade_date = %s
+                    ORDER BY stk_cd
+                """, (today,))
+                trades = cur.fetchall()
+            conn.close()
+        except Exception as e:
+            print(f"[ERROR] Failed to get today's trades: {e}")
+            return result
+
+        # Group by stock
+        from collections import defaultdict
+        stock_trades = defaultdict(lambda: {"buy_qty": 0, "buy_value": 0, "sell_qty": 0})
+
+        for stk_cd, io_tp_nm, cntr_qty, cntr_uv in trades:
+            symbol = stk_cd.replace("A", "").zfill(6)
+            tp = io_tp_nm or ""
+            qty = cntr_qty or 0
+            price = cntr_uv or 0
+
+            is_buy = "매수" in tp and "매도" not in tp and "상환" not in tp
+            is_sell = ("매도" in tp or "상환" in tp) and "매수" not in tp
+
+            if is_buy:
+                stock_trades[symbol]["buy_qty"] += qty
+                stock_trades[symbol]["buy_value"] += qty * price
+            elif is_sell:
+                stock_trades[symbol]["sell_qty"] += qty
+
+        for symbol, data in stock_trades.items():
+            net_qty = data["buy_qty"] - data["sell_qty"]
+            if net_qty > 0 and data["buy_qty"] > 0:
+                avg_buy_price = int(data["buy_value"] / data["buy_qty"])
+                result[symbol] = {"net_qty": net_qty, "avg_buy_price": avg_buy_price}
+
+        return result
+
     def execute_close_logic(self) -> Dict[str, str]:
         """
-        Execute end-of-day close logic for positions (15:18-15:20).
+        Execute end-of-day close logic for positions (15:18-15:28).
 
-        1. ALL positions: If close price is -7% from LIFO lot entry → sell that lot
-        2. TODAY's entries only (via daily_triggers):
-           - If close > lot entry: Add 0.5 unit (pyramid)
-           - If close <= lot entry (0% 이하): Sell today's lot (cut loss)
+        1. ALL positions with lots: If -7% from LIFO lot entry → sell that lot
+        2. TODAY's entries (today_qty > 0 from holdings tdy_buyq):
+           - If current > today_entry_price: pyramid (0.5 unit)
+           - If current <= today_entry_price: sell today_qty
+
+        Uses today_entry_price from holdings (not daily_lots) since
+        daily_lots are only constructed at 15:35 by daily_sync.
 
         Returns dict of {symbol: action_taken}
         """
         actions = {}
         stop_loss_pct = self.trading_settings.STOP_LOSS_PCT  # Default 7%
+
+        # Get today's net buys from account_trade_history (accurate entry prices)
+        today_net_buys = self._get_today_net_buys()
+        if today_net_buys:
+            print(f"[CLOSE] Today's net buys: {', '.join(f'{s}({d['net_qty']}주@{d['avg_buy_price']:,})' for s, d in today_net_buys.items())}")
 
         for pos in self.order_service.get_open_positions():
             symbol = pos["symbol"]
@@ -1151,8 +1214,10 @@ class MonitorService:
                 continue
 
             current_price = price_data["last"]
+            if current_price <= 0:
+                continue
 
-            # Get latest lot for LIFO-based logic
+            # 1. ALL positions: Check -7% stop loss (LIFO lot based, if lot exists)
             try:
                 conn = get_connection()
                 latest_lot = get_latest_lot(conn, symbol)
@@ -1161,45 +1226,47 @@ class MonitorService:
                 print(f"[{symbol}] Failed to get latest lot: {e}")
                 latest_lot = None
 
-            if not latest_lot:
-                # No lot found, skip
+            if latest_lot:
+                lot_entry_price = int(latest_lot["avg_purchase_price"])
+                lot_qty = latest_lot["net_quantity"]
+
+                if lot_entry_price > 0:
+                    lot_change_pct = ((current_price / lot_entry_price) - 1) * 100
+
+                    if lot_change_pct <= -stop_loss_pct:
+                        tick_size = self.client.get_tick_size(current_price)
+                        sell_price = current_price - (tick_size * 3)
+                        print(f"[{symbol}] CLOSE STOP (lot): {lot_change_pct:+.2f}% <= -{stop_loss_pct}% - SELL {lot_qty}주 @ {sell_price:,}원")
+
+                        result = self.order_service.execute_sell(
+                            symbol=symbol,
+                            price=sell_price,
+                            reason="close_stop_loss_lot",
+                            sell_qty=lot_qty,
+                        )
+
+                        if result:
+                            actions[symbol] = "close_stop_loss"
+                            self.close_actions_done.add(symbol)
+                        else:
+                            actions[symbol] = "close_stop_loss_failed"
+                        continue  # Skip other logic for this symbol
+
+            # 2. TODAY's entries: pyramid or cut loss
+            # Use net buy data from account_trade_history (accurate avg buy price)
+            today_data = today_net_buys.get(symbol)
+            if not today_data:
                 continue
 
-            lot_entry_price = int(latest_lot["avg_purchase_price"])
-            lot_qty = latest_lot["net_quantity"]
+            today_qty = today_data["net_qty"]
+            today_entry_price = today_data["avg_buy_price"]
 
-            if lot_entry_price <= 0:
+            if today_qty <= 0 or today_entry_price <= 0:
                 continue
 
-            change_pct = ((current_price / lot_entry_price) - 1) * 100
+            change_pct = ((current_price / today_entry_price) - 1) * 100
 
-            # 1. ALL positions: Check -7% stop loss at close (LIFO lot based)
-            if change_pct <= -stop_loss_pct:
-                tick_size = self.client.get_tick_size(current_price)
-                sell_price = current_price - (tick_size * 3)
-                print(f"[{symbol}] CLOSE STOP (lot): {change_pct:+.2f}% <= -{stop_loss_pct}% - SELL {lot_qty}주 @ {sell_price:,}원")
-
-                result = self.order_service.execute_sell(
-                    symbol=symbol,
-                    price=sell_price,
-                    reason="close_stop_loss_lot",
-                    sell_qty=lot_qty,  # Sell the specific lot quantity
-                )
-
-                if result:
-                    actions[symbol] = "close_stop_loss"
-                    self.close_actions_done.add(symbol)
-                else:
-                    actions[symbol] = "close_stop_loss_failed"
-                continue  # Skip other logic for this symbol
-
-            # 2. TODAY's entries only: pyramid or cut loss (LIFO lot based)
-            # Use today_qty from holdings (tdy_buyq) - covers both bot and manual buys
-            today_qty = pos.get('today_qty', 0)
-            if today_qty <= 0:
-                continue
-
-            if current_price > lot_entry_price:
+            if current_price > today_entry_price:
                 # Profitable (>0%) - check volume condition for pyramid
                 today_volume = price_data.get("volume", 0)
 
@@ -1207,7 +1274,7 @@ class MonitorService:
 
                 if vol_ok is None or vol_ok:
                     # Volume condition met (or insufficient data) → pyramid
-                    print(f"[{symbol}] Close {current_price:,}원 > Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
+                    print(f"[{symbol}] Close {current_price:,}원 > Entry {today_entry_price:,}원 ({change_pct:+.2f}%) - PYRAMID")
 
                     watchlist_item = next(
                         (w for w in self.watchlist if w["ticker"] == symbol),
@@ -1231,13 +1298,13 @@ class MonitorService:
                     # Volume insufficient → take profit
                     tick_size = self.client.get_tick_size(current_price)
                     sell_price = current_price - (tick_size * 3)
-                    print(f"[{symbol}] Close {current_price:,}원 > Lot Entry ({change_pct:+.2f}%) but LOW VOLUME - TAKE PROFIT {lot_qty}주 @ {sell_price:,}원")
+                    print(f"[{symbol}] Close {current_price:,}원 > Entry ({change_pct:+.2f}%) but LOW VOLUME - TAKE PROFIT {today_qty}주 @ {sell_price:,}원")
 
                     result = self.order_service.execute_sell(
                         symbol=symbol,
                         price=sell_price,
                         reason="close_take_profit_low_volume",
-                        sell_qty=lot_qty,
+                        sell_qty=today_qty,
                     )
 
                     if result:
@@ -1247,17 +1314,16 @@ class MonitorService:
                         actions[symbol] = "take_profit_failed"
 
             else:
-                # Loss (0% 이하) - sell today's lot
-
+                # Loss (0% 이하) - sell today's quantity
                 tick_size = self.client.get_tick_size(current_price)
                 sell_price = current_price - (tick_size * 3)
-                print(f"[{symbol}] Close {current_price:,}원 <= Lot Entry {lot_entry_price:,}원 ({change_pct:+.2f}%) - SELL {lot_qty}주 @ {sell_price:,}원")
+                print(f"[{symbol}] Close {current_price:,}원 <= Entry {today_entry_price:,}원 ({change_pct:+.2f}%) - SELL {today_qty}주 @ {sell_price:,}원")
 
                 result = self.order_service.execute_sell(
                     symbol=symbol,
                     price=sell_price,
-                    reason="close_below_lot_entry",
-                    sell_qty=lot_qty,  # Sell only today's lot
+                    reason="close_below_entry",
+                    sell_qty=today_qty,  # Sell only today's buy quantity
                 )
 
                 if result:
@@ -1308,8 +1374,20 @@ class MonitorService:
         stopped = self.check_and_execute_stop_loss()
         result["stop_losses"] = stopped
 
-        # 2. 종가 로직 (15:18-15:20): pyramid if >0%, cut loss if <=0%
+        # 2. 종가 로직 (15:18-15:28): pyramid if >0%, cut loss if <=0%
         if self.is_krx_afternoon_close_session():
+            # 종가 세션 첫 진입 시 trade history 강제 동기화
+            if not self.close_actions_done:
+                try:
+                    from services.kiwoom_service import sync_trade_history_from_kiwoom
+                    conn = get_connection()
+                    today_str = date.today().strftime("%Y%m%d")
+                    sync_trade_history_from_kiwoom(conn, start_date=today_str)
+                    conn.close()
+                    print("[CLOSE] Synced today's trade history for close logic")
+                except Exception as e:
+                    print(f"[CLOSE] Trade history sync failed: {e}")
+
             close_actions = self.execute_close_logic()
             result["close_actions"].update(close_actions)
 
