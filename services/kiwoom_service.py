@@ -1666,8 +1666,8 @@ class KiwoomTradingClient(KiwoomAPIClient):
             "ord_qty": str(quantity),
             "ord_uv": str(price),
             "trde_tp": order_type,
-            "loan_dt": loan_dt,
-            "crd_deal_tp": "01",  # 신용거래구분 (01: 융자상환매도)
+            "crd_deal_tp": "99",  # 신용거래구분 (33:융자, 99:융자합)
+            "crd_loan_dt": loan_dt,  # 대출일 YYYYMMDD
         }
 
         self._wait_for_rate_limit()
