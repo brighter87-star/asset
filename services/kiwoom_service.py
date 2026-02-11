@@ -1549,6 +1549,9 @@ class KiwoomTradingClient(KiwoomAPIClient):
             "한도 초과",
             "융자가능 종목이 아닙니다",
             "융자불가",
+            "신용매수 불가",
+            "신규 신용매수 불가",
+            "투자주의 지정종목",
         ]
         return any(keyword in error_msg for keyword in credit_limit_keywords)
 
