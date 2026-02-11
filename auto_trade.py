@@ -618,7 +618,7 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
         conn.close()
 
         if not all_lots:
-            print(f"\n[Lots Near Stop Loss] No lots in daily_lots table")
+            pass  # daily_lots는 15:35 daily_sync에서 생성되므로 장중엔 없는 것이 정상
         elif all_lots:
             # Sort by return % ascending (worst first)
             all_lots.sort(key=lambda x: x['return_pct'])
