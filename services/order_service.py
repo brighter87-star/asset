@@ -360,6 +360,7 @@ class OrderService:
         stop_loss_pct: Optional[float] = None,
         order_type: str = "0",
         use_after_hours_price: bool = False,
+        market: str = None,
     ) -> Optional[dict]:
         """
         Execute buy order (신용매수).
@@ -371,6 +372,7 @@ class OrderService:
             stop_loss_pct: Custom stop loss %, or use default
             order_type: 매매구분 (0: 보통, 62: 시간외단일가)
             use_after_hours_price: True면 종가×1.1 (시간외단일가 상한가)로 주문
+            market: 시장 강제 지정 ("KRX" or "NXT"). None이면 자동 감지.
 
         Returns:
             Order result or None if failed
@@ -425,7 +427,7 @@ class OrderService:
 
         try:
             # 1차: 신용매수 시도
-            result = self.client.buy_order(symbol, shares, buy_price, order_type=order_type, use_credit=True)
+            result = self.client.buy_order(symbol, shares, buy_price, order_type=order_type, use_credit=True, market=market)
 
         except CreditLimitError as e:
             # 신용한도 초과 종목 → 현금매수로 재시도
@@ -455,7 +457,7 @@ class OrderService:
             try:
                 use_credit = False
                 trade_logger.log_order_attempt(symbol, "BUY", shares, buy_price, "CASH", reason)
-                result = self.client.buy_order(symbol, shares, buy_price, order_type=order_type, use_credit=False)
+                result = self.client.buy_order(symbol, shares, buy_price, order_type=order_type, use_credit=False, market=market)
             except Exception as cash_error:
                 trade_logger.log_order_result(
                     symbol, "BUY", shares, buy_price,

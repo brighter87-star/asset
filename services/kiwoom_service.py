@@ -1461,6 +1461,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
         price: int,
         order_type: str = "0",
         use_credit: bool = True,
+        market: str = None,
     ) -> Dict[str, Any]:
         """
         매수 주문 (신용 또는 현금)
@@ -1471,6 +1472,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
             price: 주문가격 (지정가)
             order_type: 매매구분 (0: 보통, 3: 시장가, 5: 조건부지정가 등)
             use_credit: True=신용주문, False=현금주문
+            market: 시장 강제 지정 ("KRX" or "NXT"). None이면 자동 감지.
 
         Returns:
             dict: 주문 결과 (주문번호 등)
@@ -1483,8 +1485,10 @@ class KiwoomTradingClient(KiwoomAPIClient):
         else:
             url = f"{self.base_url}/api/dostk/ordr"
 
-        # 시장 자동 감지: 시간외단일가는 항상 KRX, 그 외 NXT전용시간대면 NXT
-        if order_type == "62":
+        # 시장 결정: market 파라미터가 있으면 강제 사용, 없으면 자동 감지
+        if market is not None:
+            pass  # market already set by caller
+        elif order_type == "62":
             market = "KRX"  # 시간외단일가는 항상 KRX
         elif self._is_nxt_only_hours():
             market = "NXT"

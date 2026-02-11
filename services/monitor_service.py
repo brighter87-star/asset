@@ -76,6 +76,7 @@ class MonitorService:
         self._unit_value_time: float = 0  # Cache timestamp
         self.sold_today: Dict[str, dict] = {}  # Track sold stocks to prevent re-buy
         self.close_actions_done: set = set()  # Track symbols processed by close logic (reset daily)
+        self.pending_vi_orders: Dict[str, dict] = {}  # VI 대기 주문 {symbol: {order_no, time, ...}}
         self._load_purchased_stocks()
         self._load_daily_triggers()
         self._load_sold_today()
@@ -971,7 +972,17 @@ class MonitorService:
         return False
 
     def execute_entry(self, item: dict, is_gap_up: bool = False) -> bool:
-        """Execute breakout entry order (0.5 unit). Pyramiding handled by execute_close_logic at 15:18."""
+        """
+        Execute breakout entry order (0.5 unit) with VI handling.
+
+        VI 처리 로직:
+        1. KRX에서 매수 주문
+        2. 2초 대기 후 체결 확인
+        3. 미체결 시: NXT 거래 가능하면 KRX 취소 → NXT 주문
+        4. NXT 불가하면: pending_vi_orders에 등록 (3분 타임아웃)
+        """
+        import time as time_module
+
         symbol = item["ticker"]
         target_price = item["target_price"]
         stop_loss_pct = item.get("stop_loss_pct")
@@ -996,29 +1007,162 @@ class MonitorService:
 
         print(f"[{symbol}] Entry at current price: {current_price:,}원 (target was {target_price:,}원)")
 
-        # 0.5 unit 매수 (피라미딩은 15:18 execute_close_logic에서 처리)
+        # Step 1: KRX 매수 주문
         result = self.order_service.execute_buy(
             symbol=symbol,
             target_price=entry_price,
             is_initial=True,
             stop_loss_pct=stop_loss_pct,
+            market="KRX",
         )
 
-        if result:
+        if not result:
+            self.daily_triggers[symbol]["status"] = "order_failed"
+            self._save_daily_triggers()
+            return False
+
+        order_no = result.get("order_no", "")
+
+        # Step 2: 2초 대기 후 체결 확인
+        time_module.sleep(2)
+
+        filled = self._is_order_filled(symbol, order_no)
+
+        if filled:
+            # 즉시 체결됨 → 성공
             self.daily_triggers[symbol].update({
                 "status": "success",
                 "entry_price": entry_price,
             })
-            self._save_daily_triggers()  # Persist to file
-
-            # Mark as purchased to prevent duplicate buys
+            self._save_daily_triggers()
             stock_name = item.get("name", "") or get_stock_name(symbol)
             self.mark_as_purchased(symbol, stock_name, entry_price)
             return True
+
+        # Step 3: 미체결 → VI 가능성. NXT 거래 가능한지 확인
+        print(f"[{symbol}] KRX 주문 미체결 (2초 경과). VI 의심 → NXT 확인...")
+
+        nxt_tradable = self._check_nxt_tradable(symbol)
+
+        if nxt_tradable:
+            # NXT 가능: KRX 주문 취소 → NXT 재주문
+            print(f"[{symbol}] NXT 거래 가능 → KRX 취소 후 NXT 주문")
+            self.order_service.cancel_pending_orders_for_symbol(symbol)
+
+            nxt_result = self.order_service.execute_buy(
+                symbol=symbol,
+                target_price=entry_price,
+                is_initial=True,
+                stop_loss_pct=stop_loss_pct,
+                market="NXT",
+            )
+
+            if nxt_result:
+                self.daily_triggers[symbol].update({
+                    "status": "success",
+                    "entry_price": entry_price,
+                    "market": "NXT",
+                })
+                self._save_daily_triggers()
+                stock_name = item.get("name", "") or get_stock_name(symbol)
+                self.mark_as_purchased(symbol, stock_name, entry_price)
+                return True
+            else:
+                self.daily_triggers[symbol]["status"] = "nxt_order_failed"
+                self._save_daily_triggers()
+                return False
         else:
-            self.daily_triggers[symbol]["status"] = "order_failed"
-            self._save_daily_triggers()  # Persist to file
+            # NXT 불가: KRX 주문 유지, 3분 타임아웃으로 추적
+            print(f"[{symbol}] NXT 불가 → KRX 주문 유지, 3분 타임아웃 추적 시작")
+            self.pending_vi_orders[symbol] = {
+                "order_no": order_no,
+                "entry_price": entry_price,
+                "ordered_at": time_module.time(),
+                "timeout_seconds": 180,  # 3분
+                "item": item,
+            }
+            self.daily_triggers[symbol].update({
+                "status": "vi_pending",
+                "entry_price": entry_price,
+            })
+            self._save_daily_triggers()
+            return False  # 아직 체결 미확인이므로 False 반환
+
+    def _is_order_filled(self, symbol: str, order_no: str) -> bool:
+        """주문 체결 여부 확인 (미체결 목록에 없으면 체결된 것으로 판단)."""
+        try:
+            pending_orders = self.client.get_pending_orders()
+            for order in pending_orders:
+                order_symbol = order.get("stk_cd", "").replace("A", "")
+                if order_symbol == symbol and order.get("ord_no", "") == order_no:
+                    ncls_qty = int(order.get("ncls_qty", 0))
+                    if ncls_qty > 0:
+                        return False  # 미체결 수량 있음
+            return True  # 미체결 목록에 없으면 체결 완료
+        except Exception as e:
+            print(f"[{symbol}] 체결 확인 실패: {e}")
+            return False  # 확인 실패 시 미체결로 간주
+
+    def _check_nxt_tradable(self, symbol: str) -> bool:
+        """종목의 NXT 거래 가능 여부 확인 (NXT 가격 조회 후 price > 0이면 가능)."""
+        try:
+            result = self.client.get_stock_price(symbol, market_type="NXT")
+            return result.get("last", 0) > 0
+        except Exception:
             return False
+
+    def check_pending_vi_orders(self):
+        """
+        VI 대기 주문 타임아웃 체크.
+        3분 경과 시 미체결 주문 취소, 체결된 경우 성공 처리.
+        """
+        import time as time_module
+
+        if not self.pending_vi_orders:
+            return
+
+        now = time_module.time()
+        completed = []
+
+        for symbol, vi_info in self.pending_vi_orders.items():
+            order_no = vi_info["order_no"]
+            ordered_at = vi_info["ordered_at"]
+            timeout = vi_info["timeout_seconds"]
+            elapsed = now - ordered_at
+
+            # 먼저 체결 여부 확인
+            filled = self._is_order_filled(symbol, order_no)
+
+            if filled:
+                # 체결 완료 → 성공 처리
+                print(f"[{symbol}] VI 대기 주문 체결 완료! ({elapsed:.0f}초 경과)")
+                entry_price = vi_info["entry_price"]
+                item = vi_info["item"]
+
+                self.daily_triggers[symbol].update({
+                    "status": "success",
+                    "entry_price": entry_price,
+                    "vi_resolved": "filled",
+                })
+                self._save_daily_triggers()
+
+                stock_name = item.get("name", "") or get_stock_name(symbol)
+                self.mark_as_purchased(symbol, stock_name, entry_price)
+                completed.append(symbol)
+
+            elif elapsed >= timeout:
+                # 3분 타임아웃 → 취소
+                print(f"[{symbol}] VI 대기 3분 타임아웃 → 미체결 주문 취소")
+                self.order_service.cancel_pending_orders_for_symbol(symbol)
+
+                self.daily_triggers[symbol].update({
+                    "status": "vi_timeout_cancelled",
+                })
+                self._save_daily_triggers()
+                completed.append(symbol)
+
+        for symbol in completed:
+            del self.pending_vi_orders[symbol]
 
     def check_and_execute_stop_loss(self) -> List[dict]:
         """
@@ -1339,6 +1483,7 @@ class MonitorService:
         self.sold_today = {}
         self._save_sold_today()
         self.close_actions_done = set()
+        self.pending_vi_orders = {}
         print("[INFO] Daily triggers, sold_today, and close_actions reset")
 
     def run_monitoring_cycle(self) -> dict:
@@ -1389,7 +1534,13 @@ class MonitorService:
             close_actions = self.execute_close_logic()
             result["close_actions"].update(close_actions)
 
-        # 3. 매수 체크 (try/except로 감싸서 에러 시에도 위 로직에 영향 없음)
+        # 3. VI 대기 주문 타임아웃 체크
+        try:
+            self.check_pending_vi_orders()
+        except Exception as e:
+            print(f"[ERROR] VI order check failed: {e}")
+
+        # 4. 매수 체크 (try/except로 감싸서 에러 시에도 위 로직에 영향 없음)
         try:
             # Gap-up entries at market open
             if self.is_market_open_time():
