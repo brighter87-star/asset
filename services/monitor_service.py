@@ -1267,7 +1267,8 @@ class MonitorService:
 
         ratio = today_volume / avg_volume
         meets = today_volume >= avg_volume * multiplier
-        print(f"[{symbol}] Volume: {today_volume:,} / Avg({days}d): {avg_volume:,.0f} = {ratio:.2f}x {'>=': if meets else '<'} {multiplier}x")
+        cmp = ">=" if meets else "<"
+        print(f"[{symbol}] Volume: {today_volume:,} / Avg({days}d): {avg_volume:,.0f} = {ratio:.2f}x {cmp} {multiplier}x")
         return meets
 
     def _get_today_net_buys(self) -> Dict[str, dict]:

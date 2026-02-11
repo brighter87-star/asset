@@ -93,7 +93,8 @@ class OrderService:
                         SUM(rmnd_qty) as total_qty,
                         SUM(rmnd_qty * avg_prc) / SUM(rmnd_qty) as avg_price,
                         SUM(rmnd_qty * avg_prc) as total_cost,
-                        MAX(cur_prc) as current_price
+                        MAX(cur_prc) as current_price,
+                        MAX(loan_dt) as loan_dt
                     FROM holdings
                     WHERE snapshot_date = %s AND rmnd_qty > 0
                     GROUP BY stk_cd, crd_class
@@ -126,7 +127,7 @@ class OrderService:
 
             synced = 0
             for row in all_holdings:
-                stock_code, stock_name, crd_class, total_qty, avg_price, total_cost, current_price = row
+                stock_code, stock_name, crd_class, total_qty, avg_price, total_cost, current_price, loan_dt = row
 
                 if not stock_code or not total_qty or total_qty <= 0:
                     continue
@@ -163,6 +164,7 @@ class OrderService:
                     "stop_loss_pct": stop_loss_pct,
                     "status": "open",
                     "crd_class": crd_class,
+                    "loan_dt": loan_dt or "",
                     "total_cost": total_cost,
                     "current_price": current_price,
                     "source": "holdings",
@@ -563,8 +565,9 @@ class OrderService:
 
         try:
             if crd_class == "CREDIT":
-                print(f"[{symbol}] 신용매도 주문 ({sell_type}, {quantity}주, {order_type_str})")
-                result = self.client.sell_credit_order(symbol, quantity, price, order_type=order_type)
+                loan_dt = pos.get("loan_dt", "")
+                print(f"[{symbol}] 신용매도 주문 ({sell_type}, {quantity}주, {order_type_str}, loan_dt={loan_dt})")
+                result = self.client.sell_credit_order(symbol, quantity, price, loan_dt=loan_dt, order_type=order_type)
             else:
                 print(f"[{symbol}] 현금매도 주문 ({sell_type}, {quantity}주, {order_type_str})")
                 result = self.client.sell_order(symbol, quantity, price, order_type=order_type)
