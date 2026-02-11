@@ -1198,6 +1198,10 @@ class MonitorService:
 
             current_price = price_data["last"]
 
+            # 현재가 0원이면 가격 조회 실패 → 손절 판단 불가, 건너뜀
+            if current_price <= 0:
+                continue
+
             # check_stop_loss returns dict with triggered, type, qty
             stop_result = self.order_service.check_stop_loss(symbol, current_price)
 

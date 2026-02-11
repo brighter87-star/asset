@@ -1667,6 +1667,7 @@ class KiwoomTradingClient(KiwoomAPIClient):
             "ord_uv": str(price),
             "trde_tp": order_type,
             "loan_dt": loan_dt,
+            "crd_deal_tp": "0",  # 신용거래구분 (0: 자동)
         }
 
         self._wait_for_rate_limit()
