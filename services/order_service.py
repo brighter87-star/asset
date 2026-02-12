@@ -122,7 +122,8 @@ class OrderService:
 
             conn.close()
 
-            # 기존 positions 초기화 (DB 기준으로 새로 로드)
+            # DB 기준으로 positions 재구성 (DB에 없는 최근 매수 종목은 보존)
+            old_positions = self.positions.copy()
             self.positions = {}
 
             synced = 0
@@ -178,8 +179,16 @@ class OrderService:
                 if today_qty > 0:
                     print(f"[SYNC] {stock_code}: total={total_qty}, today={today_qty}@{today_entry_price:,}")
 
+            # DB에 없지만 기존 positions에 있던 open 종목 복원 (매수 직후 아직 holdings 미반영)
+            restored = 0
+            for sym, old_pos in old_positions.items():
+                if sym not in self.positions and old_pos.get("status") == "open":
+                    self.positions[sym] = old_pos
+                    restored += 1
+                    print(f"[SYNC] {sym}: preserved (not yet in holdings DB)")
+
             self._save_positions()
-            print(f"[SYNC] Loaded {synced} positions from holdings DB")
+            print(f"[SYNC] Loaded {synced} positions from holdings DB" + (f", preserved {restored}" if restored else ""))
             return synced
 
         except Exception as e:
