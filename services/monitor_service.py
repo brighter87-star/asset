@@ -1543,11 +1543,8 @@ class MonitorService:
         if not self.is_any_market_active():
             return result
 
-        # 1. 손절 체크 (가장 높은 우선순위 - 다른 로직 에러에 영향받지 않도록)
-        stopped = self.check_and_execute_stop_loss()
-        result["stop_losses"] = stopped
-
-        # 2. 종가 로직 (15:18-15:28): pyramid if >0%, cut loss if <=0%
+        # 1. 종가 로직 (15:15-15:28): 손절 + 피라미딩 + 당일 매수 정리
+        #    손절(-7%)은 종가에만 평가 (장중 실행 안함)
         if self.is_krx_afternoon_close_session():
             # 종가 세션 첫 진입 시 trade history 강제 동기화
             if not self.close_actions_done:
@@ -1561,10 +1558,14 @@ class MonitorService:
                 except Exception as e:
                     print(f"[CLOSE] Trade history sync failed: {e}")
 
+            # 손절 체크 (-7% LIFO lot 기준) - 종가 세션에서만 실행
+            stopped = self.check_and_execute_stop_loss()
+            result["stop_losses"] = stopped
+
             close_actions = self.execute_close_logic()
             result["close_actions"].update(close_actions)
 
-        # 3. VI 대기 주문 타임아웃 체크
+        # 2. VI 대기 주문 타임아웃 체크
         try:
             self.check_pending_vi_orders()
         except Exception as e:

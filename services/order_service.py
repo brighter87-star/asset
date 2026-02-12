@@ -617,10 +617,19 @@ class OrderService:
             return result
 
         except Exception as e:
+            error_msg = str(e)
             trade_logger.log_order_result(
                 symbol, "SELL", quantity, price,
-                success=False, error=str(e)
+                success=False, error=error_msg
             )
+
+            # "상환할 신용내역이 없습니다" → 이미 매도된 포지션, 자동 정리
+            if "상환할 신용내역" in error_msg or "없습니다" in error_msg and "신용" in error_msg:
+                print(f"[{symbol}] Position already sold externally, removing from tracking")
+                pos["status"] = "closed"
+                pos["exit_reason"] = "already_sold_externally"
+                self._save_positions()
+
             return None
 
     def check_stop_loss(self, symbol: str, current_price: int) -> dict:
