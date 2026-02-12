@@ -1007,6 +1007,31 @@ class MonitorService:
 
         print(f"[{symbol}] Entry at current price: {current_price:,}원 (target was {target_price:,}원)")
 
+        # NXT 전용 시간대(8:00~9:00, 15:40~20:00)면 바로 NXT 주문 (VI 처리 불필요)
+        if self.is_nxt_only_hours():
+            result = self.order_service.execute_buy(
+                symbol=symbol,
+                target_price=entry_price,
+                is_initial=True,
+                stop_loss_pct=stop_loss_pct,
+                market="NXT",
+            )
+            if result:
+                self.daily_triggers[symbol].update({
+                    "status": "success",
+                    "entry_price": entry_price,
+                    "market": "NXT",
+                })
+                self._save_daily_triggers()
+                stock_name = item.get("name", "") or get_stock_name(symbol)
+                self.mark_as_purchased(symbol, stock_name, entry_price)
+                return True
+            else:
+                self.daily_triggers[symbol]["status"] = "order_failed"
+                self._save_daily_triggers()
+                return False
+
+        # KRX 시간대 (9:00~15:20): VI 처리 로직 적용
         # Step 1: KRX 매수 주문
         result = self.order_service.execute_buy(
             symbol=symbol,
