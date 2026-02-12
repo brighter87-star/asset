@@ -419,7 +419,7 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
     held_items = []
     non_held_items = []
 
-    for item in monitor.get_watchlist_filtered():
+    for item in monitor.watchlist:
         ticker = item['ticker']
         target = item['target_price']
 
