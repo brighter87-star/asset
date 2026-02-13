@@ -190,7 +190,12 @@ class OrderService:
                                 continue
                         except (ValueError, TypeError):
                             pass
-                    self.positions[sym] = old_pos
+                    preserved = old_pos.copy()
+                    # 어제 today_qty가 오늘로 이월되지 않도록 리셋
+                    preserved["today_qty"] = 0
+                    preserved["today_entry_price"] = 0
+                    preserved["today_stop_loss_price"] = 0
+                    self.positions[sym] = preserved
                     restored += 1
 
             self._save_positions()
