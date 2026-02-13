@@ -176,9 +176,6 @@ class OrderService:
                 }
                 synced += 1
 
-                if today_qty > 0:
-                    print(f"[SYNC] {stock_code}: total={total_qty}, today={today_qty}@{today_entry_price:,}")
-
             # DB에 없지만 최근 매수한 종목만 보존 (매수 직후 holdings 미반영 대비, 10분 이내만)
             restored = 0
             now = datetime.now()
@@ -190,16 +187,13 @@ class OrderService:
                             entry_time = datetime.fromisoformat(entry_time_str)
                             elapsed_minutes = (now - entry_time).total_seconds() / 60
                             if elapsed_minutes > 10:
-                                print(f"[SYNC] {sym}: removed (not in holdings DB, {elapsed_minutes:.0f}min since entry)")
                                 continue
                         except (ValueError, TypeError):
                             pass
                     self.positions[sym] = old_pos
                     restored += 1
-                    print(f"[SYNC] {sym}: preserved (not yet in holdings DB)")
 
             self._save_positions()
-            print(f"[SYNC] Loaded {synced} positions from holdings DB" + (f", preserved {restored}" if restored else ""))
             return synced
 
         except Exception as e:

@@ -427,6 +427,8 @@ def show_live_status(monitor: MonitorService, prices: dict, today_trades: list =
         current = price_data.get('last', 0)
         if current <= 0:
             current = holdings_prices.get(ticker, {}).get('last', 0)
+        if current <= 0 and ticker in positions:
+            current = positions[ticker].get('current_price', 0)
 
         if ticker in positions:
             # Held: calculate P/L from entry
