@@ -104,26 +104,33 @@ def construct_daily_lots(
         # Check existing open lots for this stock
         existing_qty = _get_existing_lot_quantity(conn, stock_code, crd_class, loan_dt, trade_date)
 
-        if existing_qty > 0 and sell_qty > 0:
-            # There are existing lots - process sells to close them first
-            close_qty = min(sell_qty, existing_qty)
-
-            # Calculate average sell price
-            total_sell_value = sum(
-                (t["cntr_qty"] or 0) * (t["cntr_uv"] or 0) for t in sells
-            )
-            avg_sell_price = Decimal(total_sell_value) / Decimal(sell_qty) if sell_qty > 0 else Decimal(0)
-
-            _reduce_lots_lifo(conn, stock_code, crd_class, loan_dt, close_qty, trade_date, avg_sell_price)
-
-            # Remaining sells offset same-day buys
-            remaining_sell = sell_qty - close_qty
-            net_buy = buy_qty - remaining_sell
-        else:
-            # No existing lots - same-day trades net out
+        # LIFO: same-day buys are most recent, so net them against sells first
+        if sell_qty <= buy_qty:
+            # All sells offset by same-day buys — don't touch existing lots
             net_buy = buy_qty - sell_qty
+        else:
+            # Sells exceed same-day buys — remaining sells close existing lots
+            remaining_sell = sell_qty - buy_qty
+            net_buy = 0
 
-        # Create new lot if net buy
+            if remaining_sell > 0 and existing_qty > 0:
+                close_qty = min(remaining_sell, existing_qty)
+
+                # Calculate average sell price
+                total_sell_value = sum(
+                    (t["cntr_qty"] or 0) * (t["cntr_uv"] or 0) for t in sells
+                )
+                avg_sell_price = Decimal(total_sell_value) / Decimal(sell_qty) if sell_qty > 0 else Decimal(0)
+
+                _reduce_lots_lifo(conn, stock_code, crd_class, loan_dt, close_qty, trade_date, avg_sell_price)
+
+                unmatched = remaining_sell - close_qty
+                if unmatched > 0:
+                    print(f"Warning: Sold {unmatched} shares of {stock_code} without matching lots (likely bought before start_date)")
+            elif remaining_sell > 0 and existing_qty == 0:
+                print(f"Warning: Sold {remaining_sell} shares of {stock_code} without matching lots (likely bought before start_date)")
+
+        # Create new lot if net buy, or clean up stale lot if net is zero
         if net_buy > 0:
             total_buy_value = sum(
                 (t["cntr_qty"] or 0) * (t["cntr_uv"] or 0) for t in buys
@@ -142,9 +149,9 @@ def construct_daily_lots(
                 avg_price,
                 total_cost,
             )
-        elif net_buy < 0 and existing_qty == 0:
-            # Sold more than bought today, but no existing lots (bought before start_date)
-            print(f"Warning: Sold {abs(net_buy)} shares of {stock_code} without matching lots (likely bought before start_date)")
+        elif net_buy == 0 and (buy_qty > 0 or sell_qty > 0):
+            # Same-day buy+sell netted to 0 — remove stale lot if exists from previous run
+            _delete_lot_if_exists(conn, stock_code, crd_class, loan_dt, trade_date)
 
     conn.commit()
 
@@ -185,6 +192,24 @@ def _get_existing_lot_quantity(
                 (stock_code, crd_class, loan_dt if loan_dt else '', loan_dt if loan_dt else '', before_date),
             )
         return cur.fetchone()[0]
+
+
+def _delete_lot_if_exists(
+    conn: pymysql.connections.Connection,
+    stock_code: str,
+    crd_class: str,
+    loan_dt: str,
+    trade_date: date,
+) -> None:
+    """Delete a stale lot created by a previous run (e.g., day-trade netted to 0)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM daily_lots
+            WHERE stock_code = %s AND crd_class = %s AND loan_dt = %s AND trade_date = %s
+            """,
+            (stock_code, crd_class, loan_dt if loan_dt else '', trade_date),
+        )
 
 
 def _insert_daily_lot(
