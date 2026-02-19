@@ -13,7 +13,7 @@ while true; do
     HASH_BEFORE=$(find . -name "*.py" -exec stat -c %Y {} \; 2>/dev/null | md5sum)
 
     # Run trading bot
-    python auto_trade.py &
+    python3 auto_trade.py &
     PID=$!
 
     echo "[WRAPPER] Bot started with PID $PID"

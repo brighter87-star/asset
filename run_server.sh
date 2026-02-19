@@ -12,7 +12,7 @@ echo "=========================================="
 echo "Asset Lot Tracking - $(date)"
 echo "=========================================="
 
-python main.py
+python3 main.py
 
 EXIT_CODE=$?
 

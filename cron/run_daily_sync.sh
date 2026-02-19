@@ -11,7 +11,7 @@ cd "$PROJECT_DIR"
 source venv/bin/activate
 
 # Run daily sync
-python cron/daily_sync.py "$@"
+python3 cron/daily_sync.py "$@"
 
 # Deactivate
 deactivate

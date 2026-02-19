@@ -6,7 +6,7 @@
 #   2. 스크립트 실행: ./scripts/run_autotrade.sh
 #   3. 세션 분리: Ctrl+B, D
 #   4. 세션 재접속: tmux attach -t autotrade
-#   5. 상태 확인: python auto_trade.py --status
+#   5. 상태 확인: python3 auto_trade.py --status
 
 cd "$(dirname "$0")/.."
 
@@ -26,7 +26,7 @@ echo "  Ctrl+C  : Stop trading"
 echo "  Ctrl+B,D: Detach tmux (keeps running)"
 echo ""
 
-python auto_trade.py
+python3 auto_trade.py
 
 echo ""
 echo "Auto Trading System Stopped."

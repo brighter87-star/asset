@@ -40,11 +40,11 @@ pip install -r requirements.txt
 
 # Run initial backfill
 echo "[3/4] Running initial backfill..."
-python cron/initial_backfill.py
+python3 cron/initial_backfill.py
 
 # Setup cron
 echo "[4/4] Setting up cron..."
-CRON_CMD="35 6 * * 1-5 cd $PROJECT_DIR && $PROJECT_DIR/venv/bin/python cron/daily_sync.py >> /var/log/asset_sync.log 2>&1"
+CRON_CMD="35 6 * * 1-5 cd $PROJECT_DIR && $PROJECT_DIR/venv/bin/python3 cron/daily_sync.py >> /var/log/asset_sync.log 2>&1"
 
 # Check if cron job already exists
 if crontab -l 2>/dev/null | grep -q "daily_sync.py"; then
