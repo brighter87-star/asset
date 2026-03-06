@@ -38,6 +38,11 @@ purchased_stocks.json
 watchlist.csv
 settings.csv
 
+# Notebook output images
+notebooks/images/
+notebooks/*.png
+notebooks/.ipynb_checkpoints/
+
 # Claude settings
 .claude/
 
